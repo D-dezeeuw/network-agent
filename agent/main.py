@@ -13,7 +13,7 @@ from security_news import fetch_security_news
 from security_scan import run_scan
 from system_health import run_health_check
 from ai import generate_report
-from tg_publish import send_message
+from tg_publish import send_messages
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,9 +37,9 @@ def run_agent() -> None:
     security = run_scan(reset=RESET_BASELINE)
     health = run_health_check()
 
-    report = generate_report(metrics_summary, logs, news, security, health)
-    success = send_message(report)
-    log.info("Report sent: %s", success)
+    parts = generate_report(metrics_summary, logs, news, security, health)
+    success = send_messages(parts)
+    log.info("Report sent: %d parts, ok=%s", len(parts), success)
 
 
 def _build_trigger():
