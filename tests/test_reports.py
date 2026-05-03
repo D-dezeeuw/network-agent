@@ -247,7 +247,7 @@ def test_build_record_uses_severity_from_finding_objects():
         decision={"digest_sent": True}, digest_html="x", digest_parts=["x"],
         findings=findings, metrics={}, trends={}, security={},
         system_health={"docker_containers": {"concerning": [{"name": "plex"}]}},
-        auth={}, fail2ban={}, news=[], active_alarms=[], active_acks={},
+        auth={}, fail2ban={}, rkhunter={}, news=[], active_alarms=[], active_acks={},
     )
     assert rec["schema_version"] == 1
     assert rec["derived"]["findings_total"] == 2

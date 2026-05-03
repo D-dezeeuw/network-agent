@@ -14,6 +14,10 @@ REPORT_HOUR = int(os.getenv("REPORT_HOUR", "8"))
 _interval = os.getenv("REPORT_INTERVAL_HOURS", "").strip()
 REPORT_INTERVAL_HOURS = int(_interval) if _interval else None
 LOG_PATH = os.getenv("LOG_PATH", "/host/logs/auth.log")
+RKHUNTER_LOG_PATH = os.getenv(
+    "RKHUNTER_LOG_PATH",
+    "/host/logs/rkhunter/reports/rkhunter-combined.log",
+)
 
 _authorized = os.getenv("TELEGRAM_AUTHORIZED_USERS", "").strip()
 TELEGRAM_AUTHORIZED_USERS = [int(uid) for uid in _authorized.split(",") if uid.strip()]
