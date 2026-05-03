@@ -50,18 +50,12 @@ logging.basicConfig(
 log = logging.getLogger("agent")
 
 
-def run_agent(target_chat_id: int | str | None = None,
-              force: bool = False, preview: bool = False) -> None:
-    """Collect data, build the digest, send to the configured channel.
+def collect_inputs() -> dict:
+    """Gather the live data sources, honoring per-source mutes.
 
-    target_chat_id: override destination (used by /preview to reply to caller).
-    force: bypass mute/quiet gates (used by /runnow and /preview).
-    preview: don't persist snapshots/decrement mutes — read-only run.
+    Shared between `run_agent` (digest pipeline) and `cmd_speak` (voice
+    summary) so the muted-source short-circuit logic doesn't drift.
     """
-    log.info("Starting report collection (force=%s preview=%s)", force, preview)
-    cycle_start = time.monotonic()
-    cycle_timestamp = datetime.now(timezone.utc).isoformat()
-
     if is_source_muted("metrics"):
         metrics_summary = {"_muted": True}
     else:
@@ -85,6 +79,36 @@ def run_agent(target_chat_id: int | str | None = None,
         health.pop("pending_updates", None)
     if is_source_muted("kernel") and isinstance(health, dict):
         health.pop("kernel_messages_24h", None)
+
+    return {
+        "metrics": metrics_summary,
+        "logs": logs,
+        "fail2ban": fail2ban_status,
+        "news": news,
+        "security": security,
+        "health": health,
+    }
+
+
+def run_agent(target_chat_id: int | str | None = None,
+              force: bool = False, preview: bool = False) -> None:
+    """Collect data, build the digest, send to the configured channel.
+
+    target_chat_id: override destination (used by /preview to reply to caller).
+    force: bypass mute/quiet gates (used by /runnow and /preview).
+    preview: don't persist snapshots/decrement mutes — read-only run.
+    """
+    log.info("Starting report collection (force=%s preview=%s)", force, preview)
+    cycle_start = time.monotonic()
+    cycle_timestamp = datetime.now(timezone.utc).isoformat()
+
+    inputs = collect_inputs()
+    metrics_summary = inputs["metrics"]
+    logs = inputs["logs"]
+    fail2ban_status = inputs["fail2ban"]
+    news = inputs["news"]
+    security = inputs["security"]
+    health = inputs["health"]
 
     snoozed = snoozed_fingerprints()
     sec_filtered, health_filtered = strip_snoozed_from_data(security, health, snoozed)

@@ -29,11 +29,12 @@ from docker_logs import get_container_logs, list_container_names
 from history_metrics import known_metrics, metric_info, series_for_metric
 import memory
 from notifications import clear_mute, mute_for, mute_status
-from overrides import is_settable, report_config, set_override, unset_override
+from overrides import effective, is_settable, report_config, set_override, unset_override
 import reports
-from tg_publish import html_escape
+from tg_publish import html_escape, send_audio, send_voice
 import tool_mute
 from trends import load_recent, metric_series, render_sparkline
+import voice
 
 log = logging.getLogger("bot")
 
@@ -78,6 +79,7 @@ HELP_TEXT = (
     "<b>/unset &lt;KEY&gt;</b> — revert an override\n"
     "<b>/config</b> — show effective settings + sources\n"
     "<b>/preview</b> — dry-run digest sent only to you\n"
+    "<b>/speak</b> — voice summary of current state\n"
     "<b>/clearmemory</b> — forget recent Q&amp;A context\n"
     "<b>/help</b> — this menu\n\n"
     "Or just ask a question in plain English."
@@ -107,6 +109,7 @@ BOT_COMMAND_MENU = [
     BotCommand("unset", "Revert an override"),
     BotCommand("config", "Show effective settings"),
     BotCommand("preview", "Dry-run digest to caller only"),
+    BotCommand("speak", "Voice summary of current state"),
     BotCommand("clearmemory", "Forget Q&A context"),
     BotCommand("runnow", "Trigger full digest now"),
     BotCommand("help", "Show this command list"),
@@ -734,7 +737,10 @@ async def cmd_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_chat.send_message(
             "Usage: <code>/set &lt;KEY&gt; &lt;VALUE&gt;</code>\n"
             "Settable: <code>OPENROUTER_MODEL</code>, <code>QUIET_HOURS</code>, "
-            "<code>REPORT_HOUR</code>, <code>REPORT_INTERVAL_HOURS</code>",
+            "<code>REPORT_HOUR</code>, <code>REPORT_INTERVAL_HOURS</code>, "
+            "<code>TTS_MODEL</code>, <code>TTS_VOICE</code>, "
+            "<code>TTS_AS_VOICE_MESSAGE</code>, <code>TTS_MAX_CHARS</code>, "
+            "<code>TTS_SPEED</code>",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -898,6 +904,67 @@ async def cmd_preview(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await chat.send_message(f"🚨 Preview failed: {e}")
 
 
+async def cmd_speak(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Generate a 30–60s voice summary of current server state.
+
+    Read-only — same data-collection pattern as /preview, but the output
+    is synthesized speech delivered to the caller's chat. Falls back to
+    text with an explicit prefix on synthesis, transcode, or upload
+    failure so the user never gets silence.
+    """
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    chat = update.effective_chat
+    if chat is None:
+        return
+
+    await chat.send_message("Generating voice summary…")
+
+    from main import collect_inputs  # avoid circular import at module load
+    try:
+        inputs = await asyncio.to_thread(collect_inputs)
+        summary = await asyncio.to_thread(
+            voice.generate_voice_summary,
+            inputs["metrics"], inputs["health"], inputs["security"],
+            inputs["news"], None, inputs["fail2ban"],
+        )
+    except Exception as e:
+        log.exception("speak: input collection / summary generation failed")
+        await chat.send_message(f"🚨 Couldn't build summary: {html_escape(str(e))}",
+                                parse_mode=ParseMode.HTML)
+        return
+
+    async def _fallback(prefix: str) -> None:
+        await chat.send_message(
+            f"{prefix}\n\n{html_escape(summary)}",
+            parse_mode=ParseMode.HTML,
+        )
+
+    try:
+        mp3 = await asyncio.to_thread(voice.synthesize_speech, summary)
+    except RuntimeError as e:
+        log.warning("speak: synthesis failed: %s", e)
+        await _fallback(f"🔇 TTS failed ({html_escape(str(e))}) — text only:")
+        return
+
+    as_voice = (effective("TTS_AS_VOICE_MESSAGE", "true") or "true").lower() == "true"
+
+    if as_voice:
+        try:
+            ogg = await asyncio.to_thread(voice.mp3_to_ogg_opus, mp3)
+        except RuntimeError as e:
+            log.warning("speak: transcode failed: %s", e)
+            await _fallback(f"🔇 Transcode failed ({html_escape(str(e))}) — text only:")
+            return
+        ok = await asyncio.to_thread(send_voice, ogg, "", chat.id)
+    else:
+        ok = await asyncio.to_thread(send_audio, mp3, "", chat.id)
+
+    if not ok:
+        await _fallback("🔇 Upload failed — text only:")
+
+
 async def cmd_clearmemory(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized_update(update):
         await _refuse(update)
@@ -1054,6 +1121,7 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("unset", cmd_unset))
     app.add_handler(CommandHandler("config", cmd_config))
     app.add_handler(CommandHandler("preview", cmd_preview))
+    app.add_handler(CommandHandler("speak", cmd_speak))
     app.add_handler(CommandHandler("clearmemory", cmd_clearmemory))
     for cmd, query in COMMAND_QUERIES.items():
         app.add_handler(CommandHandler(cmd, _make_query_handler(query)))
