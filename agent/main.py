@@ -6,14 +6,16 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from acks import snoozed_fingerprints
 from config import REPORT_HOUR, REPORT_INTERVAL_HOURS, RESET_BASELINE
+from findings import enumerate_findings, filter_unsnoozed, strip_snoozed_from_data
 from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
 from logs import get_auth_log_summary
 from security_news import fetch_security_news
 from security_scan import run_scan
 from system_health import run_health_check
 from ai import generate_report
-from tg_publish import send_messages
+from tg_publish import send_message_with_buttons, send_messages
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,9 +39,28 @@ def run_agent() -> None:
     security = run_scan(reset=RESET_BASELINE)
     health = run_health_check()
 
-    parts = generate_report(metrics_summary, logs, news, security, health)
+    snoozed = snoozed_fingerprints()
+    sec_filtered, health_filtered = strip_snoozed_from_data(security, health, snoozed)
+    active_findings = filter_unsnoozed(enumerate_findings(security, health), snoozed)
+    log.info("findings: %d active, %d snoozed", len(active_findings), len(snoozed))
+
+    parts = generate_report(metrics_summary, logs, news, sec_filtered, health_filtered)
     success = send_messages(parts)
     log.info("Report sent: %d parts, ok=%s", len(parts), success)
+
+    _send_finding_buttons(active_findings)
+
+
+def _send_finding_buttons(findings) -> None:
+    """For each unsnoozed finding, send a follow-up message with snooze buttons."""
+    for f in findings:
+        buttons = [[
+            ("Snooze 24h", f"ack:s24:{f.fingerprint}"),
+            ("Snooze 7d", f"ack:s7d:{f.fingerprint}"),
+            ("Investigate", f"ack:inv:{f.fingerprint}"),
+        ]]
+        text = f"{f.label}\n<i>id: <code>{f.fingerprint}</code></i>"
+        send_message_with_buttons(text, buttons)
 
 
 def _build_trigger():
