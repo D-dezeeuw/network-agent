@@ -233,8 +233,14 @@ async def on_text(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await _send_chunked(update, answer)
 
 
-async def _post_init(app: Application) -> None:
-    """Register the slash-command menu so Telegram clients show '/' suggestions."""
+async def register_commands(app: Application) -> None:
+    """Register the slash-command menu so Telegram clients show '/' suggestions.
+
+    Called explicitly from main.py after the application initializes. We
+    don't use builder.post_init() because PTB v21 only fires that hook
+    from Application.run_polling() / run_webhook() — not from the manual
+    `async with app: app.start()` flow we use.
+    """
     try:
         await app.bot.set_my_commands(BOT_COMMAND_MENU)
         log.info("Registered %d slash commands with Telegram", len(BOT_COMMAND_MENU))
@@ -253,7 +259,6 @@ def build_application() -> Application | None:
     app = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
-        .post_init(_post_init)
         .build()
     )
     app.add_handler(CommandHandler("help", cmd_help))

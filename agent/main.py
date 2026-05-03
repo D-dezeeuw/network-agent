@@ -80,7 +80,7 @@ async def main_async() -> None:
     await asyncio.to_thread(run_agent)
 
     # Lazy import to keep main.py importable from bot.py at handler time.
-    from bot import build_application
+    from bot import build_application, register_commands
     bot_app = build_application()
 
     if bot_app is None:
@@ -91,6 +91,7 @@ async def main_async() -> None:
 
     log.info("Starting Telegram polling")
     async with bot_app:
+        await register_commands(bot_app)
         await bot_app.start()
         await bot_app.updater.start_polling(drop_pending_updates=True)
         try:
