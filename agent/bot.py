@@ -20,7 +20,7 @@ from telegram.ext import (
 
 from acks import active_acks, add_ack, remove_ack
 from ai import answer_question
-from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN
+from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 log = logging.getLogger("bot")
 
@@ -67,10 +67,42 @@ BOT_COMMAND_MENU = [
 ]
 
 
+def _resolve_digest_chat_id() -> int | None:
+    """TELEGRAM_CHAT_ID arrives as a string from env; coerce once at import."""
+    if not TELEGRAM_CHAT_ID:
+        return None
+    try:
+        return int(TELEGRAM_CHAT_ID)
+    except ValueError:
+        log.warning("TELEGRAM_CHAT_ID is not numeric: %r", TELEGRAM_CHAT_ID)
+        return None
+
+
+_DIGEST_CHAT_ID = _resolve_digest_chat_id()
+
+
 def _is_authorized(user_id: int | None) -> bool:
+    """User-ID-only check. Used by callback queries (button taps always carry a user)."""
     if not TELEGRAM_AUTHORIZED_USERS:
         return False
     return user_id in TELEGRAM_AUTHORIZED_USERS
+
+
+def _is_authorized_update(update: Update) -> bool:
+    """Authorize either by user (private DM) or by chat (digest channel/group).
+
+    Channels don't carry an effective_user on posts, so we additionally trust
+    any message arriving in the configured digest chat — admins of that chat
+    are already trusted to receive the digest, so they're trusted to issue
+    commands there too.
+    """
+    user = update.effective_user
+    if user and _is_authorized(user.id):
+        return True
+    chat = update.effective_chat
+    if chat and _DIGEST_CHAT_ID is not None and chat.id == _DIGEST_CHAT_ID:
+        return True
+    return False
 
 
 async def _send_chunked(update: Update, text: str) -> None:
@@ -92,14 +124,14 @@ async def _refuse(update: Update) -> None:
 
 
 async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update.effective_user.id if update.effective_user else None):
+    if not _is_authorized_update(update):
         await _refuse(update)
         return
     await update.effective_chat.send_message(HELP_TEXT, parse_mode=ParseMode.HTML)
 
 
 async def cmd_runnow(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update.effective_user.id if update.effective_user else None):
+    if not _is_authorized_update(update):
         await _refuse(update)
         return
     await update.effective_chat.send_message("Running a full digest now…")
@@ -109,7 +141,7 @@ async def cmd_runnow(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_acks(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update.effective_user.id if update.effective_user else None):
+    if not _is_authorized_update(update):
         await _refuse(update)
         return
     active = active_acks()
@@ -125,7 +157,7 @@ async def cmd_acks(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_unsnooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_authorized(update.effective_user.id if update.effective_user else None):
+    if not _is_authorized_update(update):
         await _refuse(update)
         return
     args = ctx.args or []
@@ -200,10 +232,11 @@ async def on_callback(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 def _make_query_handler(query: str):
     """Build a CommandHandler callback that runs `query` through answer_question."""
     async def handler(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-        if not _is_authorized(update.effective_user.id if update.effective_user else None):
+        if not _is_authorized_update(update):
             await _refuse(update)
             return
-        log.info("Slash query for user_id=%s: %r", update.effective_user.id, query)
+        user_id = update.effective_user.id if update.effective_user else None
+        log.info("Slash query for user_id=%s: %r", user_id, query)
         try:
             answer = await asyncio.to_thread(answer_question, query)
         except Exception as e:
@@ -214,16 +247,16 @@ def _make_query_handler(query: str):
 
 
 async def on_text(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    if not _is_authorized(user.id if user else None):
+    if not _is_authorized_update(update):
         await _refuse(update)
         return
 
-    text = (update.message.text or "").strip()
+    text = (update.message.text or update.effective_message.text or "").strip() if update.effective_message else ""
     if not text:
         return
 
-    log.info("Q&A from user_id=%s: %r", user.id, text[:200])
+    user = update.effective_user
+    log.info("Q&A from user_id=%s: %r", user.id if user else None, text[:200])
     try:
         answer = await asyncio.to_thread(answer_question, text)
     except Exception as e:
