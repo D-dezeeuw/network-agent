@@ -19,6 +19,11 @@ services:
       TELEGRAM_AUTHORIZED_USERS: ${TELEGRAM_AUTHORIZED_USERS:-}
       LOG_PATH: ${LOG_PATH:-/host/logs/auth.log}
       RESET_BASELINE: ${RESET_BASELINE:-false}
+      TTS_MODEL: ${TTS_MODEL:-openai/gpt-4o-mini-tts-2025-12-15}
+      TTS_VOICE: ${TTS_VOICE:-alloy}
+      TTS_AS_VOICE_MESSAGE: ${TTS_AS_VOICE_MESSAGE:-true}
+      TTS_MAX_CHARS: ${TTS_MAX_CHARS:-3000}
+      TTS_SPEED: ${TTS_SPEED:-1.0}
     volumes:
       - /var/log:/host/logs:ro
       - /run/log/journal:/run/log/journal:ro

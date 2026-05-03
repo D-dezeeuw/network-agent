@@ -33,6 +33,11 @@ SETTABLE_KEYS = {
     "REPORT_HOUR": _coerce_int,
     "REPORT_INTERVAL_HOURS": _coerce_int,
     "REPORTS_RETENTION_DAYS": _coerce_int,
+    "TTS_MODEL": _coerce_str,
+    "TTS_VOICE": _coerce_str,
+    "TTS_AS_VOICE_MESSAGE": _coerce_str,
+    "TTS_MAX_CHARS": _coerce_int,
+    "TTS_SPEED": _coerce_str,
 }
 
 

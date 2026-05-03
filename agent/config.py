@@ -22,6 +22,12 @@ STATE_DIR = os.getenv("STATE_DIR", "/state")
 HOST_PREFIX = os.getenv("HOST_PREFIX", "/host")
 RESET_BASELINE = os.getenv("RESET_BASELINE", "false").lower() == "true"
 
+TTS_MODEL = os.getenv("TTS_MODEL", "openai/gpt-4o-mini-tts-2025-12-15")
+TTS_VOICE = os.getenv("TTS_VOICE", "alloy")
+TTS_AS_VOICE_MESSAGE = os.getenv("TTS_AS_VOICE_MESSAGE", "true").lower() == "true"
+TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "3000"))
+TTS_SPEED = float(os.getenv("TTS_SPEED", "1.0"))
+
 SECURITY_FEEDS = [
     "https://www.debian.org/security/dsa",
     "https://feeds.feedburner.com/TheHackersNews",

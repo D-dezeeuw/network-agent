@@ -94,6 +94,65 @@ def send_photo(image_bytes: bytes, caption: str = "", chat_id: ChatId = None) ->
         return False
 
 
+def send_voice(audio_ogg: bytes, caption: str = "", chat_id: ChatId = None) -> bool:
+    """Upload an OGG-Opus blob as a Telegram voice message.
+
+    The MIME must be `audio/ogg` to render with the round-avatar voice-message
+    UI. `audio/opus` is silently downgraded to a generic file attachment by
+    the official clients.
+    """
+    if not audio_ogg:
+        return True
+    target = _resolve_chat(chat_id)
+    if not target:
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVoice"
+    data = {"chat_id": target, "parse_mode": "HTML"}
+    if caption:
+        data["caption"] = caption[:1024]
+    try:
+        r = requests.post(
+            url,
+            data=data,
+            files={"voice": ("summary.ogg", audio_ogg, "audio/ogg")},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return True
+    except requests.RequestException as e:
+        print(f"[telegram] Failed to send voice: {e}")
+        return False
+
+
+def send_audio(audio_mp3: bytes, caption: str = "", chat_id: ChatId = None) -> bool:
+    """Upload an MP3 blob as a regular Telegram audio attachment.
+
+    Used as the fallback when ffmpeg isn't available or when
+    TTS_AS_VOICE_MESSAGE=false.
+    """
+    if not audio_mp3:
+        return True
+    target = _resolve_chat(chat_id)
+    if not target:
+        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendAudio"
+    data = {"chat_id": target, "parse_mode": "HTML"}
+    if caption:
+        data["caption"] = caption[:1024]
+    try:
+        r = requests.post(
+            url,
+            data=data,
+            files={"audio": ("summary.mp3", audio_mp3, "audio/mpeg")},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return True
+    except requests.RequestException as e:
+        print(f"[telegram] Failed to send audio: {e}")
+        return False
+
+
 def send_message_with_buttons(text: str, buttons: list[list[tuple[str, str]]],
                               chat_id: ChatId = None) -> bool:
     """Send a single message with an inline keyboard.
