@@ -70,13 +70,13 @@ Six-phase rollout to evolve the network-agent's Telegram UX from a single-messag
 **Goal:** replace text-only metrics with at-a-glance images.
 **Branch:** `feat/phase-4-charts`
 
-- [ ] Add `matplotlib>=3.8` to `requirements.txt`
-- [ ] New module `agent/charts.py`: `render_sparkline(values, title) -> bytes` returning in-memory PNG
-- [ ] Per-metric mini sparkline attached to the metrics digest message
-- [ ] Status-grid composite: colored table of containers/disks (`render_status_grid()`)
-- [ ] `/chart <metric>` command — live chart on demand
-- [ ] Cache rendered chart bytes within a single digest cycle
-- [ ] Tests: chart functions return non-empty PNG bytes; signature/size sanity
+- [x] Add `matplotlib>=3.8` to `requirements.txt`
+- [x] New module `agent/charts.py`: `render_sparkline(values, title) -> bytes` returning in-memory PNG
+- [x] Per-metric mini sparkline attached to the metrics digest message
+- [x] Status-grid composite: colored table of containers/disks (`render_status_grid()`)
+- [x] `/chart <metric>` command — live chart on demand
+- [x] Cache rendered chart bytes within a single digest cycle
+- [x] Tests: chart functions return non-empty PNG bytes; signature/size sanity
 
 **Acceptance:** the metrics message includes ≥1 chart image; `/chart cpu` returns a chart in-chat.
 
