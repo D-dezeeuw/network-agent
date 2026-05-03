@@ -11,6 +11,12 @@ from config import REPORT_HOUR, REPORT_INTERVAL_HOURS, RESET_BASELINE
 from findings import enumerate_findings, filter_unsnoozed, strip_snoozed_from_data
 from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
 from logs import get_auth_log_summary
+from notifications import (
+    alarm_poller_loop,
+    is_muted,
+    send_to_critical,
+    should_send_digest,
+)
 from security_news import fetch_security_news
 from security_scan import run_scan
 from system_health import run_health_check
@@ -66,11 +72,22 @@ def run_agent() -> None:
     prune_snapshots()
 
     parts = generate_report(metrics_summary, logs, news, sec_filtered, health_filtered, trends)
-    success = send_messages(parts)
-    log.info("Report sent: %d parts, ok=%s", len(parts), success)
 
-    _send_digest_charts(history + [current_snap], health_filtered)
-    _send_finding_buttons(active_findings)
+    # Snapshots/baselines always update so history stays continuous; the
+    # gates below only suppress *outgoing* messages.
+    allow_digest, reason = should_send_digest()
+    if allow_digest:
+        success = send_messages(parts)
+        log.info("Report sent: %d parts, ok=%s", len(parts), success)
+        _send_digest_charts(history + [current_snap], health_filtered)
+        _send_finding_buttons(active_findings)
+    else:
+        log.info("Routine digest suppressed (%s); criticals still route", reason)
+
+    # Critical findings always go to the critical chat (when configured),
+    # bypassing quiet hours but respecting mute. send_to_critical() handles
+    # both checks internally.
+    _route_critical_findings(active_findings)
 
 
 def _send_digest_charts(snapshots: list[dict], health: dict) -> None:
@@ -126,6 +143,14 @@ def _send_finding_buttons(findings) -> None:
         send_message_with_buttons(text, buttons)
 
 
+def _route_critical_findings(findings) -> None:
+    """Mirror critical-severity findings to the critical chat (text-only,
+    no buttons — that interactive surface stays in the digest chat)."""
+    for f in findings:
+        if f.severity == "critical":
+            send_to_critical(f.label)
+
+
 def _build_trigger():
     if REPORT_INTERVAL_HOURS:
         log.info("Scheduling agent every %sh", REPORT_INTERVAL_HOURS)
@@ -142,14 +167,20 @@ async def main_async() -> None:
     # Run one digest immediately so a fresh deploy produces output.
     await asyncio.to_thread(run_agent)
 
+    # Real-time critical-alarm poller runs alongside everything else.
+    # Idles itself if TELEGRAM_CRITICAL_CHAT_ID isn't set.
+    poller_task = asyncio.create_task(alarm_poller_loop(), name="alarm-poller")
+
     # Lazy import to keep main.py importable from bot.py at handler time.
     from bot import build_application, register_commands
     bot_app = build_application()
 
     if bot_app is None:
-        log.info("Q&A bot not configured; running digest scheduler only")
-        # Block forever so the container stays up.
-        await asyncio.Event().wait()
+        log.info("Q&A bot not configured; running digest scheduler + alarm poller")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            poller_task.cancel()
         return
 
     log.info("Starting Telegram polling")
@@ -160,6 +191,7 @@ async def main_async() -> None:
         try:
             await asyncio.Event().wait()
         finally:
+            poller_task.cancel()
             await bot_app.updater.stop()
             await bot_app.stop()
 
