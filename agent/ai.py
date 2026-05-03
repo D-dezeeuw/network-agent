@@ -3,9 +3,15 @@ import json
 from openai import OpenAI
 
 from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_MODEL
+from overrides import effective
 from tools import TOOLS_SCHEMA, execute_tool
 
 client = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+
+
+def _model() -> str:
+    """Resolve the effective model — override beats the import-time env."""
+    return effective("OPENROUTER_MODEL", OPENROUTER_MODEL) or OPENROUTER_MODEL
 
 MAX_TOOL_ITERATIONS = 6
 
@@ -118,7 +124,7 @@ Escalation rules:
 
     try:
         response = client.chat.completions.create(
-            model=OPENROUTER_MODEL,
+            model=_model(),
             max_tokens=1536,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -152,18 +158,23 @@ def _format_tool_footer(tools_used: list[str]) -> str:
     return f"\n\n<i>used: {', '.join(unique)}</i>"
 
 
-def answer_question(user_message: str) -> str:
-    """Run a tool-call loop to answer a user question with live server data."""
-    messages = [
-        {"role": "system", "content": _QA_SYSTEM_PROMPT},
-        {"role": "user", "content": user_message},
-    ]
+def answer_question(user_message: str, history: list[dict] | None = None) -> str:
+    """Run a tool-call loop to answer a user question with live server data.
+
+    `history` is an optional list of prior {role, content} message dicts
+    from the user's conversation buffer (memory.get_history()) — used so
+    follow-up questions inherit context.
+    """
+    messages: list[dict] = [{"role": "system", "content": _QA_SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
     tools_used: list[str] = []
 
     for _ in range(MAX_TOOL_ITERATIONS):
         try:
             response = client.chat.completions.create(
-                model=OPENROUTER_MODEL,
+                model=_model(),
                 max_tokens=1024,
                 messages=messages,
                 tools=TOOLS_SCHEMA,

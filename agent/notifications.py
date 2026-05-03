@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 
 from config import STATE_DIR
 from netdata import fetch_active_alarms
+from overrides import effective
 from tg_publish import send_message
 
 log = logging.getLogger("notifications")
@@ -129,7 +130,9 @@ def is_quiet_at(hour: int, spec: str | None = None) -> bool:
 
 
 def is_quiet_now() -> bool:
-    return is_quiet_at(datetime.now().hour)
+    """Check the override-aware QUIET_HOURS spec, then evaluate against now."""
+    spec = effective("QUIET_HOURS", QUIET_HOURS) or ""
+    return is_quiet_at(datetime.now().hour, spec)
 
 
 # --- routing decisions ------------------------------------------------------

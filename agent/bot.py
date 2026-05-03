@@ -22,7 +22,10 @@ from acks import active_acks, add_ack, remove_ack
 from ai import answer_question
 from charts import render_sparkline as render_sparkline_png
 from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+import memory
 from notifications import clear_mute, mute_for, mute_status
+from overrides import is_settable, report_config, set_override, unset_override
+import tool_mute
 from trends import load_recent, metric_series, render_sparkline
 
 log = logging.getLogger("bot")
@@ -56,6 +59,13 @@ HELP_TEXT = (
     "<b>/unsnooze &lt;id&gt;</b> — remove a snooze by fingerprint\n"
     "<b>/mute_all &lt;hours&gt;</b> — silence all output (incl. criticals)\n"
     "<b>/unmute_all</b> — cancel an active mute\n"
+    "<b>/mute &lt;source&gt; [N]</b> — silence one source for N digests\n"
+    "<b>/unmute &lt;source&gt;</b> — restore a muted source\n"
+    "<b>/set &lt;KEY&gt; &lt;VALUE&gt;</b> — runtime config override\n"
+    "<b>/unset &lt;KEY&gt;</b> — revert an override\n"
+    "<b>/config</b> — show effective settings + sources\n"
+    "<b>/preview</b> — dry-run digest sent only to you\n"
+    "<b>/clearmemory</b> — forget recent Q&amp;A context\n"
     "<b>/help</b> — this menu\n\n"
     "Or just ask a question in plain English."
 )
@@ -73,6 +83,13 @@ BOT_COMMAND_MENU = [
     BotCommand("unsnooze", "Remove a snooze (takes id arg)"),
     BotCommand("mute_all", "Silence all output for N hours"),
     BotCommand("unmute_all", "Cancel an active mute"),
+    BotCommand("mute", "Silence one data source"),
+    BotCommand("unmute", "Restore a muted source"),
+    BotCommand("set", "Runtime config override"),
+    BotCommand("unset", "Revert an override"),
+    BotCommand("config", "Show effective settings"),
+    BotCommand("preview", "Dry-run digest to caller only"),
+    BotCommand("clearmemory", "Forget Q&A context"),
     BotCommand("runnow", "Trigger full digest now"),
     BotCommand("help", "Show this command list"),
 ]
@@ -348,6 +365,194 @@ async def cmd_unmute_all(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         await update.effective_chat.send_message("Nothing to unmute — agent isn't muted.")
 
 
+async def cmd_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if len(args) < 2:
+        await update.effective_chat.send_message(
+            "Usage: <code>/set &lt;KEY&gt; &lt;VALUE&gt;</code>\n"
+            "Settable: <code>OPENROUTER_MODEL</code>, <code>QUIET_HOURS</code>, "
+            "<code>REPORT_HOUR</code>, <code>REPORT_INTERVAL_HOURS</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    key = args[0].strip().upper()
+    value = " ".join(args[1:]).strip()
+    if not is_settable(key):
+        await update.effective_chat.send_message(
+            f"<code>{key}</code> isn't settable at runtime.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    try:
+        stored = set_override(key, value)
+    except ValueError as e:
+        await update.effective_chat.send_message(f"❌ {e}")
+        return
+    note = ""
+    if key in ("REPORT_HOUR", "REPORT_INTERVAL_HOURS"):
+        note = "\n<i>Scheduler trigger is built once at startup — restart the container for cadence changes to take effect.</i>"
+    await update.effective_chat.send_message(
+        f"✅ <code>{key}</code> = <code>{stored}</code>{note}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_unset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        await update.effective_chat.send_message(
+            "Usage: <code>/unset &lt;KEY&gt;</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    key = args[0].strip().upper()
+    if unset_override(key):
+        await update.effective_chat.send_message(
+            f"✅ Cleared override for <code>{key}</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.effective_chat.send_message(
+            f"No override set for <code>{key}</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def cmd_config(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    rows = report_config()
+    lines = ["<b>Effective config</b>"]
+    for r in rows:
+        marker = "🔧" if r["source"] == "override" else "📦" if r["source"] == "env" else "⚪"
+        lines.append(
+            f"{marker} <code>{r['key']}</code> = <code>{r['value']}</code> "
+            f"<i>({r['source']})</i>"
+        )
+    lines.append("\n🔧 override · 📦 env · ⚪ default")
+    await update.effective_chat.send_message("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_mute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Per-source mute. Distinct from /mute_all (which silences ALL output)."""
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        active = tool_mute.active_mutes()
+        avail = ", ".join(tool_mute.known_aliases())
+        active_lines = "\n".join(
+            f"  <code>{k}</code> — {v if v is not None else '∞'} cycles left"
+            for k, v in active.items()
+        ) or "  (none)"
+        await update.effective_chat.send_message(
+            "Usage: <code>/mute &lt;source&gt; [N]</code>\n"
+            f"Sources: <code>{avail}</code>\n"
+            f"<b>Active mutes:</b>\n{active_lines}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    alias = args[0].strip().lower()
+    source = tool_mute.resolve(alias)
+    if source is None:
+        await update.effective_chat.send_message(
+            f"Unknown source <code>{alias}</code>. "
+            f"Known: <code>{', '.join(tool_mute.known_aliases())}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    cycles: int | None = None
+    if len(args) >= 2:
+        try:
+            cycles = int(args[1])
+            if cycles <= 0:
+                raise ValueError
+        except ValueError:
+            await update.effective_chat.send_message(
+                f"Couldn't parse <code>{args[1]}</code> as a positive integer.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+    tool_mute.mute(source, cycles)
+    horizon = f"{cycles} digest cycle(s)" if cycles else "indefinitely"
+    await update.effective_chat.send_message(
+        f"🔕 <code>{alias}</code> muted for {horizon}.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_unmute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        await update.effective_chat.send_message(
+            "Usage: <code>/unmute &lt;source&gt;</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    alias = args[0].strip().lower()
+    source = tool_mute.resolve(alias)
+    if source is None:
+        await update.effective_chat.send_message(
+            f"Unknown source <code>{alias}</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    if tool_mute.unmute(source):
+        await update.effective_chat.send_message(
+            f"🔔 <code>{alias}</code> unmuted.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.effective_chat.send_message(
+            f"<code>{alias}</code> wasn't muted.",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def cmd_preview(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Dry-run a digest, sent only to the caller. Skips snapshot writes
+    and tool-mute decrements so it doesn't perturb persistent state."""
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    chat = update.effective_chat
+    if chat is None:
+        return
+    await chat.send_message("Generating preview…")
+    from main import run_agent  # avoid circular import
+    try:
+        await asyncio.to_thread(run_agent, chat.id, True, True)
+    except Exception as e:
+        log.exception("preview run_agent failed")
+        await chat.send_message(f"🚨 Preview failed: {e}")
+
+
+async def cmd_clearmemory(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    user = update.effective_user
+    user_id = user.id if user else None
+    if user_id is None:
+        await update.effective_chat.send_message("No user context to clear.")
+        return
+    if memory.clear(user_id):
+        await update.effective_chat.send_message("🧹 Conversation memory cleared.")
+    else:
+        await update.effective_chat.send_message("Nothing to clear — no buffer for you yet.")
+
+
 _SNOOZE_DURATIONS = {"s24": ("24h", 24), "s7d": ("7 days", 24 * 7)}
 
 
@@ -427,13 +632,18 @@ async def on_text(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     user = update.effective_user
-    log.info("Q&A from user_id=%s: %r", user.id if user else None, text[:200])
+    user_id = user.id if user else None
+    history = memory.get_history(user_id) if user_id else []
+    log.info("Q&A from user_id=%s: %r (history turns=%d)",
+             user_id, text[:200], len(history) // 2)
     try:
-        answer = await asyncio.to_thread(answer_question, text)
+        answer = await asyncio.to_thread(answer_question, text, history)
     except Exception as e:
         log.exception("answer_question raised")
         answer = f"🚨 Internal error: {e}"
 
+    if user_id and answer:
+        memory.append_turn(user_id, text, answer)
     await _send_chunked(update, answer)
 
 
@@ -473,6 +683,13 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("chart", cmd_chart))
     app.add_handler(CommandHandler("mute_all", cmd_mute_all))
     app.add_handler(CommandHandler("unmute_all", cmd_unmute_all))
+    app.add_handler(CommandHandler("mute", cmd_mute))
+    app.add_handler(CommandHandler("unmute", cmd_unmute))
+    app.add_handler(CommandHandler("set", cmd_set))
+    app.add_handler(CommandHandler("unset", cmd_unset))
+    app.add_handler(CommandHandler("config", cmd_config))
+    app.add_handler(CommandHandler("preview", cmd_preview))
+    app.add_handler(CommandHandler("clearmemory", cmd_clearmemory))
     for cmd, query in COMMAND_QUERIES.items():
         app.add_handler(CommandHandler(cmd, _make_query_handler(query)))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ack:"))
