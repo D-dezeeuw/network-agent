@@ -1,4 +1,4 @@
-from netdata import summarize_chart
+from netdata import _decode_mount, summarize_chart
 
 
 def test_summarize_chart_empty():
@@ -22,3 +22,15 @@ def test_summarize_chart_rounds():
 def test_summarize_chart_all_none():
     data = {"data": [[0, None], [1, None]]}
     assert summarize_chart(data) == {}
+
+
+def test_decode_mount_root():
+    assert _decode_mount("_") == "/"
+
+
+def test_decode_mount_single_level():
+    assert _decode_mount("_boot") == "/boot"
+
+
+def test_decode_mount_nested():
+    assert _decode_mount("_var_lib_docker") == "/var/lib/docker"

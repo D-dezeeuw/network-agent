@@ -1,11 +1,10 @@
 import requests
 from config import NETDATA_BASE_URL
 
-CHARTS = {
+STATIC_CHARTS = {
     "cpu": "system.cpu",
     "ram": "system.ram",
     "network": "system.net",
-    "disk": "disk_space._",
 }
 
 
@@ -33,8 +32,31 @@ def fetch_active_alarms() -> list:
         return []
 
 
+def discover_disk_charts() -> list[str]:
+    """Returns all disk_space.* chart names available on this Netdata."""
+    try:
+        r = requests.get(f"{NETDATA_BASE_URL}/api/v1/charts", timeout=10)
+        r.raise_for_status()
+        return sorted(c for c in r.json().get("charts", {}) if c.startswith("disk_space."))
+    except requests.RequestException as e:
+        print(f"[netdata] Failed to discover charts: {e}")
+        return []
+
+
+def _decode_mount(suffix: str) -> str:
+    """Netdata encodes mount points by replacing '/' with '_'. Reverse that."""
+    if suffix == "_":
+        return "/"
+    return "/" + suffix.lstrip("_").replace("_", "/")
+
+
 def collect_all_metrics() -> dict:
-    return {name: fetch_chart(chart) for name, chart in CHARTS.items()}
+    out = {name: fetch_chart(chart) for name, chart in STATIC_CHARTS.items()}
+    for chart_name in discover_disk_charts():
+        suffix = chart_name[len("disk_space."):]
+        key = f"disk:{_decode_mount(suffix)}"
+        out[key] = fetch_chart(chart_name)
+    return out
 
 
 def summarize_chart(data: dict) -> dict:
