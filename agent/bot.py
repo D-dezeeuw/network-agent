@@ -7,6 +7,7 @@ through the AI tool-call loop. Co-exists with the scheduled digest.
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
@@ -80,6 +81,7 @@ HELP_TEXT = (
     "<b>/config</b> — show effective settings + sources\n"
     "<b>/preview</b> — dry-run digest sent only to you\n"
     "<b>/speak</b> — voice summary of current state\n"
+    "<b>/update</b> — pull and apply container updates via watchtower\n"
     "<b>/clearmemory</b> — forget recent Q&amp;A context\n"
     "<b>/help</b> — this menu\n\n"
     "Or just ask a question in plain English."
@@ -110,6 +112,7 @@ BOT_COMMAND_MENU = [
     BotCommand("config", "Show effective settings"),
     BotCommand("preview", "Dry-run digest to caller only"),
     BotCommand("speak", "Voice summary of current state"),
+    BotCommand("update", "Run watchtower to update containers"),
     BotCommand("clearmemory", "Forget Q&A context"),
     BotCommand("runnow", "Trigger full digest now"),
     BotCommand("help", "Show this command list"),
@@ -978,6 +981,83 @@ async def cmd_speak(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _fallback("🔇 Upload failed — text only:")
 
 
+_UPDATE_LOCK = threading.Lock()
+WATCHTOWER_INLINE_CHAR_CAP = 3500
+
+
+async def cmd_update(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run watchtower one-shot to pull and apply container updates.
+
+    Single-flight: the lock blocks concurrent invocations so two users
+    can't both kick off long-running watchtower runs. The agent's own
+    container is excluded inside watchtower.run_once so the bot doesn't
+    kill itself mid-update.
+    """
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    chat = update.effective_chat
+    if chat is None:
+        return
+
+    if not _UPDATE_LOCK.acquire(blocking=False):
+        await chat.send_message(
+            "⏳ An update is already running. Wait for it to finish before retrying.",
+        )
+        return
+
+    try:
+        await chat.send_message(
+            "🔄 Running container update check via watchtower… "
+            "first run may take a minute while the image pulls.",
+        )
+        from watchtower import run_once  # avoid pulling docker SDK at module load
+        try:
+            result = await asyncio.to_thread(run_once)
+        except Exception as e:
+            log.exception("watchtower.run_once raised")
+            await chat.send_message(
+                f"🚨 Update failed: {html_escape(str(e))}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        emoji = "✅" if result.get("success") else "🚨"
+        summary = html_escape(result.get("summary") or "(no summary)")
+        header = f"{emoji} <b>Update complete</b>\n{summary}"
+        output = result.get("output") or ""
+
+        if not output:
+            await chat.send_message(header, parse_mode=ParseMode.HTML)
+            return
+
+        escaped = html_escape(output)
+        if len(escaped) <= WATCHTOWER_INLINE_CHAR_CAP:
+            await chat.send_message(
+                f"{header}\n<pre>{escaped}</pre>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await chat.send_message(header, parse_mode=ParseMode.HTML)
+        buf = BytesIO(output.encode("utf-8"))
+        buf.name = "watchtower.log"
+        try:
+            await chat.send_document(
+                document=buf,
+                caption=f"{emoji} watchtower log — {len(output)} chars",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as e:
+            log.exception("watchtower log upload failed")
+            await chat.send_message(
+                f"Couldn't upload log: {html_escape(str(e))}",
+                parse_mode=ParseMode.HTML,
+            )
+    finally:
+        _UPDATE_LOCK.release()
+
+
 async def cmd_clearmemory(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized_update(update):
         await _refuse(update)
@@ -1135,6 +1215,7 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("config", cmd_config))
     app.add_handler(CommandHandler("preview", cmd_preview))
     app.add_handler(CommandHandler("speak", cmd_speak))
+    app.add_handler(CommandHandler("update", cmd_update))
     app.add_handler(CommandHandler("clearmemory", cmd_clearmemory))
     for cmd, query in COMMAND_QUERIES.items():
         app.add_handler(CommandHandler(cmd, _make_query_handler(query)))
