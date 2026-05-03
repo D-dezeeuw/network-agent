@@ -11,7 +11,12 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 NETDATA_BASE_URL = os.getenv("NETDATA_BASE_URL", "http://localhost:19999")
 REPORT_HOUR = int(os.getenv("REPORT_HOUR", "8"))
+_interval = os.getenv("REPORT_INTERVAL_HOURS", "").strip()
+REPORT_INTERVAL_HOURS = int(_interval) if _interval else None
 LOG_PATH = os.getenv("LOG_PATH", "/host/logs/auth.log")
+
+_authorized = os.getenv("TELEGRAM_AUTHORIZED_USERS", "").strip()
+TELEGRAM_AUTHORIZED_USERS = [int(uid) for uid in _authorized.split(",") if uid.strip()]
 
 STATE_DIR = os.getenv("STATE_DIR", "/state")
 HOST_PREFIX = os.getenv("HOST_PREFIX", "/host")

@@ -1,8 +1,13 @@
+import json
+
 from openai import OpenAI
 
 from config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, OPENROUTER_MODEL
+from tools import TOOLS_SCHEMA, execute_tool
 
 client = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL)
+
+MAX_TOOL_ITERATIONS = 6
 
 
 def generate_report(metrics: dict, logs: dict, news: list, security: dict, health: dict) -> str:
@@ -57,3 +62,73 @@ Keep it concise. Use emoji for scannability. This will be sent via Telegram.
     except Exception as e:
         print(f"[ai] OpenRouter API error: {e}")
         return f"🚨 Agent check failed: OpenRouter API unavailable ({e})"
+
+
+_QA_SYSTEM_PROMPT = """\
+You are an ops assistant for a Debian Bookworm Linux server. The user is the
+server's admin asking about its current state.
+
+You have tools that read live data: server metrics, security scan diffs,
+system health, Docker containers, auth logs, kernel messages, and CVE news.
+Call the tools needed to answer the question accurately. Don't guess —
+if you don't have a tool for what was asked, say so.
+
+Reply in plain text suitable for Telegram (Markdown is fine but no HTML).
+Keep replies tight. If a tool returns an error, surface it briefly.
+"""
+
+
+def answer_question(user_message: str) -> str:
+    """Run a tool-call loop to answer a user question with live server data."""
+    messages = [
+        {"role": "system", "content": _QA_SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+
+    for _ in range(MAX_TOOL_ITERATIONS):
+        try:
+            response = client.chat.completions.create(
+                model=OPENROUTER_MODEL,
+                max_tokens=1024,
+                messages=messages,
+                tools=TOOLS_SCHEMA,
+            )
+        except Exception as e:
+            print(f"[ai] OpenRouter API error in answer_question: {e}")
+            return f"🚨 Couldn't reach OpenRouter: {e}"
+
+        msg = response.choices[0].message
+        tool_calls = msg.tool_calls or []
+
+        if not tool_calls:
+            return msg.content or "(no answer)"
+
+        messages.append({
+            "role": "assistant",
+            "content": msg.content,
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in tool_calls
+            ],
+        })
+
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            result = execute_tool(tc.function.name, args)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result, default=str),
+            })
+
+    return "🤔 I gathered a lot of data but couldn't converge on an answer. Try a more specific question."
