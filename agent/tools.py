@@ -5,10 +5,13 @@ JSON-serializable data; the AI layer hands those results back to Claude
 during the tool-call loop.
 """
 
+from datetime import datetime, timedelta, timezone
+
 from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
 from docker_logs import get_container_logs
 from fail2ban import get_status as get_fail2ban_status
 from logs import get_auth_log_summary
+import reports
 from security_news import fetch_security_news
 from security_scan import run_scan
 from system_health import (
@@ -79,6 +82,26 @@ def _get_container_logs(name: str, tail: int = 100, since_minutes: int | None = 
 
 def _get_fail2ban_status() -> dict:
     return get_fail2ban_status()
+
+
+def _get_report_history(days: int = 7, limit: int | None = None) -> list[dict]:
+    """Return compact summaries (not full digests) of cycles in the last N days."""
+    since = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+    records = reports.load_reports(since=since, limit=limit)
+    return [reports.summarize_for_table(r) for r in records]
+
+
+def _get_report_detail(timestamp: str) -> dict:
+    """Return one full report by ISO date prefix or full timestamp."""
+    record = reports.find_report_by_prefix(timestamp)
+    return record if record is not None else {"error": f"no report matching {timestamp!r}"}
+
+
+def _get_history_stats(days: int = 30) -> dict:
+    """Return pre-aggregated counts/means over a rolling window."""
+    since = datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+    records = reports.load_reports(since=since)
+    return reports.aggregate_stats(records)
 
 
 TOOLS_SCHEMA = [
@@ -210,6 +233,47 @@ TOOLS_SCHEMA = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_report_history",
+            "description": "Return COMPACT summaries (timestamp, verdict, finding/critical counts, ban count, sent y/n) of past digest cycles in the last N days. NOT the full digests — context-cheap. Use for 'what's been happening lately', 'how many criticals last week', 'when did we last have a quiet day' questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "default": 7, "description": "How far back to look."},
+                    "limit": {"type": "integer", "description": "Cap on number of records returned."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_report_detail",
+            "description": "Return ONE full archived report by ISO date prefix (e.g. '2026-05-01') or timestamp prefix ('2026-05-01T08'). Use after calling get_report_history to drill into a specific cycle the user is asking about. Returns the digest text, full findings list, metrics, and all section data from that cycle.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timestamp": {"type": "string", "description": "ISO date or timestamp prefix to match."},
+                },
+                "required": ["timestamp"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_history_stats",
+            "description": "Return pre-aggregated stats over the last N days: total/critical/warning finding counts, total port probes, total failed auth, total fail2ban bans, mean CPU/RAM, digest-sent ratio, top-5 finding categories. Use for 'how was the server this week/month' questions — saves the model from doing arithmetic over many records.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer", "default": 30},
+                },
+            },
+        },
+    },
 ]
 
 
@@ -227,6 +291,9 @@ TOOL_IMPLS = {
     "get_kernel_messages": _get_kernel_messages,
     "get_container_logs": _get_container_logs,
     "get_fail2ban_status": _get_fail2ban_status,
+    "get_report_history": _get_report_history,
+    "get_report_detail": _get_report_detail,
+    "get_history_stats": _get_history_stats,
 }
 
 

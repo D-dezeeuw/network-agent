@@ -144,5 +144,65 @@ def render_status_grid(containers: list[dict], disks: dict) -> bytes:
     return _save(fig)
 
 
+def render_history_chart(points: list[tuple], title: str = "",
+                         ylabel: str = "") -> bytes:
+    """Time-axis line chart for /history <metric>.
+
+    `points` is a list of (datetime, float). Empty input renders a
+    "no data" placeholder instead of crashing — Telegram still gets a
+    valid PNG and the user gets actionable feedback.
+    """
+    plt = _get_plt()
+    import matplotlib.dates as mdates
+
+    fig, ax = plt.subplots(figsize=(8, 3.2))
+
+    if not points:
+        ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                transform=ax.transAxes, color="#888")
+        ax.axis("off")
+        return _save(fig)
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+
+    ax.plot(xs, ys, color="#4a90e2", linewidth=2, marker="o", markersize=3)
+    ax.fill_between(xs, ys, min(ys), alpha=0.18, color="#4a90e2")
+
+    if title:
+        ax.set_title(title, fontsize=11, loc="left", color="#222")
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=9, color="#666")
+
+    span_days = (xs[-1] - xs[0]).days if len(xs) > 1 else 0
+    if span_days <= 2:
+        loc = mdates.HourLocator(interval=max(1, max(1, len(xs) // 6)))
+        fmt = mdates.DateFormatter("%m-%d %H:%M")
+    elif span_days <= 14:
+        loc = mdates.DayLocator()
+        fmt = mdates.DateFormatter("%m-%d")
+    else:
+        loc = mdates.AutoDateLocator()
+        fmt = mdates.ConciseDateFormatter(loc)
+
+    ax.xaxis.set_major_locator(loc)
+    ax.xaxis.set_major_formatter(fmt)
+    fig.autofmt_xdate(rotation=30)
+
+    ax.tick_params(axis="both", labelsize=8, colors="#666")
+    ax.grid(axis="y", linestyle=":", alpha=0.4)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("#ccc")
+
+    latest = ys[-1]
+    ax.annotate(f"{latest:g}", xy=(xs[-1], latest),
+                xytext=(4, 0), textcoords="offset points",
+                fontsize=9, color="#222")
+
+    return _save(fig)
+
+
 def is_png(blob: bytes) -> bool:
     return isinstance(blob, (bytes, bytearray)) and blob[:8] == PNG_SIGNATURE
