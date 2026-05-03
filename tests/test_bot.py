@@ -32,7 +32,7 @@ def test_command_queries_match_bot_command_menu():
         "help", "runnow", "acks", "unsnooze", "trend", "chart", "logs",
         "history", "stats", "report", "export",
         "mute_all", "unmute_all", "mute", "unmute",
-        "set", "unset", "config", "preview", "speak", "clearmemory",
+        "set", "unset", "config", "preview", "speak", "update", "clearmemory",
     }
     assert query_names | direct_handlers == menu_names, (
         f"menu/handler drift: only-in-menu={menu_names - (query_names | direct_handlers)}, "
