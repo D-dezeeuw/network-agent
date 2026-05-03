@@ -740,7 +740,8 @@ async def cmd_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "<code>REPORT_HOUR</code>, <code>REPORT_INTERVAL_HOURS</code>, "
             "<code>TTS_MODEL</code>, <code>TTS_VOICE</code>, "
             "<code>TTS_AS_VOICE_MESSAGE</code>, <code>TTS_MAX_CHARS</code>, "
-            "<code>TTS_SPEED</code>",
+            "<code>TTS_SPEED</code>, <code>TTS_RESPONSE_FORMAT</code>, "
+            "<code>TTS_PCM_SAMPLE_RATE</code>",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -942,24 +943,36 @@ async def cmd_speak(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
     try:
-        mp3 = await asyncio.to_thread(voice.synthesize_speech, summary)
+        raw = await asyncio.to_thread(voice.synthesize_speech, summary)
     except RuntimeError as e:
         log.warning("speak: synthesis failed: %s", e)
         await _fallback(f"🔇 TTS failed ({html_escape(str(e))}) — text only:")
         return
 
     as_voice = (effective("TTS_AS_VOICE_MESSAGE", "true") or "true").lower() == "true"
+    fmt = voice._resolve_response_format()  # "mp3" or "pcm"
 
     if as_voice:
         try:
-            ogg = await asyncio.to_thread(voice.mp3_to_ogg_opus, mp3)
+            ogg = await asyncio.to_thread(voice.to_ogg_opus, raw, fmt)
         except RuntimeError as e:
             log.warning("speak: transcode failed: %s", e)
             await _fallback(f"🔇 Transcode failed ({html_escape(str(e))}) — text only:")
             return
         ok = await asyncio.to_thread(send_voice, ogg, "", chat.id)
     else:
-        ok = await asyncio.to_thread(send_audio, mp3, "", chat.id)
+        # sendAudio needs an MP3 (or other recognized container). Raw PCM
+        # has no headers, so wrap it before upload; MP3 passes through.
+        if fmt == "pcm":
+            try:
+                audio = await asyncio.to_thread(voice.pcm_to_mp3, raw)
+            except RuntimeError as e:
+                log.warning("speak: pcm→mp3 failed: %s", e)
+                await _fallback(f"🔇 Transcode failed ({html_escape(str(e))}) — text only:")
+                return
+        else:
+            audio = raw
+        ok = await asyncio.to_thread(send_audio, audio, "", chat.id)
 
     if not ok:
         await _fallback("🔇 Upload failed — text only:")
