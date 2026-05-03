@@ -11,12 +11,14 @@ from telegram import BotCommand, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
 
+from acks import active_acks, add_ack, remove_ack
 from ai import answer_question
 from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN
 
@@ -45,6 +47,8 @@ HELP_TEXT = (
     "<b>/security</b> — security scan delta\n"
     "<b>/updates</b> — pending package updates\n"
     "<b>/news</b> — relevant security news\n"
+    "<b>/acks</b> — list active snoozes\n"
+    "<b>/unsnooze &lt;id&gt;</b> — remove a snooze by fingerprint\n"
     "<b>/help</b> — this menu\n\n"
     "Or just ask a question in plain English."
 )
@@ -56,6 +60,8 @@ BOT_COMMAND_MENU = [
     BotCommand("security", "Security scan delta"),
     BotCommand("updates", "Pending package updates"),
     BotCommand("news", "Relevant security news"),
+    BotCommand("acks", "List active snoozes"),
+    BotCommand("unsnooze", "Remove a snooze (takes id arg)"),
     BotCommand("runnow", "Trigger full digest now"),
     BotCommand("help", "Show this command list"),
 ]
@@ -100,6 +106,95 @@ async def cmd_runnow(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     from main import run_agent  # avoid circular import at module load
     await asyncio.to_thread(run_agent)
     await update.effective_chat.send_message("Digest sent.")
+
+
+async def cmd_acks(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update.effective_user.id if update.effective_user else None):
+        await _refuse(update)
+        return
+    active = active_acks()
+    if not active:
+        await update.effective_chat.send_message("No active snoozes.")
+        return
+    lines = ["<b>Active snoozes:</b>"]
+    for fp, info in sorted(active.items(), key=lambda kv: kv[1].get("expires_at", "")):
+        label = info.get("label", "(no label)")
+        expires = info.get("expires_at", "?")
+        lines.append(f"\n<code>{fp}</code> — expires {expires}\n  {label}")
+    await update.effective_chat.send_message("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_unsnooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update.effective_user.id if update.effective_user else None):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        await update.effective_chat.send_message(
+            "Usage: <code>/unsnooze &lt;fingerprint&gt;</code>\n"
+            "(get fingerprints from /acks)",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    fp = args[0].strip()
+    if remove_ack(fp):
+        await update.effective_chat.send_message(f"Removed snooze for <code>{fp}</code>.",
+                                                 parse_mode=ParseMode.HTML)
+    else:
+        await update.effective_chat.send_message(f"No active snooze for <code>{fp}</code>.",
+                                                 parse_mode=ParseMode.HTML)
+
+
+_SNOOZE_DURATIONS = {"s24": ("24h", 24), "s7d": ("7 days", 24 * 7)}
+
+
+async def on_callback(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Process inline-button taps on finding messages.
+
+    callback_data format: "ack:<action>:<fingerprint>"
+      action ∈ {s24, s7d, inv}
+    """
+    query = update.callback_query
+    if query is None:
+        return
+
+    user_id = query.from_user.id if query.from_user else None
+    if not _is_authorized(user_id):
+        await query.answer("Not authorized.", show_alert=True)
+        return
+
+    parts = (query.data or "").split(":")
+    if len(parts) != 3 or parts[0] != "ack":
+        await query.answer("Bad callback.", show_alert=True)
+        return
+    _, action, fp = parts
+
+    label = (query.message.text or "")[:200] if query.message else ""
+
+    if action in _SNOOZE_DURATIONS:
+        human, hours = _SNOOZE_DURATIONS[action]
+        add_ack(fp, label, hours=hours)
+        await query.answer(f"Snoozed for {human}.")
+        try:
+            await query.edit_message_text(
+                text=f"{label}\n\n<i>✅ snoozed for {human}</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception as e:
+            log.warning("edit_message_text failed: %s", e)
+    elif action == "inv":
+        await query.answer("Marked for investigation.")
+        try:
+            await query.edit_message_text(
+                text=f"{label}\n\n<i>🔍 flagged for investigation</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception as e:
+            log.warning("edit_message_text failed: %s", e)
+    else:
+        await query.answer("Unknown action.", show_alert=True)
 
 
 def _make_query_handler(query: str):
@@ -163,7 +258,10 @@ def build_application() -> Application | None:
     )
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("runnow", cmd_runnow))
+    app.add_handler(CommandHandler("acks", cmd_acks))
+    app.add_handler(CommandHandler("unsnooze", cmd_unsnooze))
     for cmd, query in COMMAND_QUERIES.items():
         app.add_handler(CommandHandler(cmd, _make_query_handler(query)))
+    app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ack:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     return app

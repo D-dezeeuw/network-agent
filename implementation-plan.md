@@ -34,14 +34,14 @@ Six-phase rollout to evolve the network-agent's Telegram UX from a single-messag
 **Goal:** tap-to-snooze persistent findings; stop showing the same finding daily until it changes.
 **Branch:** `feat/phase-2-interactivity`
 
-- [ ] Inline keyboards on each finding: `Snooze 24h`, `Snooze 7d`, `Investigate`
-- [ ] New module `agent/acks.py`: load/save acknowledgements at `/state/acks.json` (fingerprint → expiry)
-- [ ] Fingerprint findings by stable hash of `(category, key)` (e.g. `("cron_new", "/etc/cron.d/foo")`)
-- [ ] Filter active acks out of digest data before passing to AI
-- [ ] `CallbackQueryHandler` in `bot.py` to process button taps (records ack, replies confirmation)
-- [ ] `/acks` command — list active snoozes with expiry timestamps
-- [ ] `/unsnooze <fingerprint>` to revert
-- [ ] Tests: ack persistence, expiry pruning, fingerprint stability
+- [x] Inline keyboards on each finding: `Snooze 24h`, `Snooze 7d`, `Investigate`
+- [x] New module `agent/acks.py`: load/save acknowledgements at `/state/acks.json` (fingerprint → expiry)
+- [x] Fingerprint findings by stable hash of `(category, key)` (e.g. `("cron_new", "/etc/cron.d/foo")`)
+- [x] Filter active acks out of digest data before passing to AI
+- [x] `CallbackQueryHandler` in `bot.py` to process button taps (records ack, replies confirmation)
+- [x] `/acks` command — list active snoozes with expiry timestamps
+- [x] `/unsnooze <fingerprint>` to revert
+- [x] Tests: ack persistence, expiry pruning, fingerprint stability
 
 **Acceptance:** a snoozed finding does not appear in the next digest until expiry; tapping a snooze button returns a confirmation reply.
 
