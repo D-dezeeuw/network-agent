@@ -28,6 +28,7 @@ ALIASES = {
     "metrics": "metrics",
     "health": "system_health",
     "rkhunter": "rkhunter",
+    "abuseipdb": "abuseipdb",
 }
 
 

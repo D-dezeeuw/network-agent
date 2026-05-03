@@ -82,7 +82,8 @@ def _compute_derived(findings, system_health) -> dict:
 def build_record(*, timestamp, trigger, model, cycle_duration_ms,
                  decision, digest_html, digest_parts,
                  findings, metrics, trends, security, system_health,
-                 auth, fail2ban, rkhunter, news, active_alarms, active_acks) -> dict:
+                 auth, fail2ban, rkhunter, ip_reputations,
+                 news, active_alarms, active_acks) -> dict:
     """Assemble a serializable report record from all the cycle inputs.
 
     Keyword-only on purpose — there are many fields and order would be
@@ -112,6 +113,7 @@ def build_record(*, timestamp, trigger, model, cycle_duration_ms,
         "auth": auth or {},
         "fail2ban": fail2ban or {},
         "rkhunter": rkhunter or {},
+        "ip_reputations": ip_reputations or {},
         "news": news or [],
         "active_alarms": active_alarms or [],
         "active_acks": active_acks or {},

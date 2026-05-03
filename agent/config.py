@@ -19,12 +19,21 @@ RKHUNTER_LOG_PATH = os.getenv(
     "/host/logs/rkhunter/reports/rkhunter-combined.log",
 )
 
+ABUSEIPDB_API_KEY = os.getenv("ABUSEIPDB_API_KEY")
+ABUSEIPDB_CACHE_TTL_HOURS = int(os.getenv("ABUSEIPDB_CACHE_TTL_HOURS", "24"))
+ABUSEIPDB_LOOKUP_LIMIT = int(os.getenv("ABUSEIPDB_LOOKUP_LIMIT", "10"))
+
 _authorized = os.getenv("TELEGRAM_AUTHORIZED_USERS", "").strip()
 TELEGRAM_AUTHORIZED_USERS = [int(uid) for uid in _authorized.split(",") if uid.strip()]
 
 STATE_DIR = os.getenv("STATE_DIR", "/state")
 HOST_PREFIX = os.getenv("HOST_PREFIX", "/host")
 RESET_BASELINE = os.getenv("RESET_BASELINE", "false").lower() == "true"
+
+ABUSEIPDB_CACHE_PATH = os.getenv(
+    "ABUSEIPDB_CACHE_PATH",
+    os.path.join(STATE_DIR, "abuseipdb_cache.json"),
+)
 
 TTS_MODEL = os.getenv("TTS_MODEL", "openai/gpt-4o-mini-tts-2025-12-15")
 TTS_VOICE = os.getenv("TTS_VOICE", "alloy")

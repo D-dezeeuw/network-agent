@@ -51,11 +51,13 @@ def split_report(report: str) -> list[str]:
 def generate_report(metrics: dict, logs: dict, news: list, security: dict,
                     health: dict, trends: dict | None = None,
                     fail2ban: dict | None = None,
-                    rkhunter: dict | None = None) -> list[str]:
+                    rkhunter: dict | None = None,
+                    ip_reputations: dict | None = None) -> list[str]:
     """Generate the daily digest as an ordered list of section messages."""
     trends_block = trends or {"deltas": {}, "disk_forecasts": {}}
     fail2ban_block = fail2ban or {"enabled": False}
     rkhunter_block = rkhunter or {"enabled": False}
+    ip_reputations_block = ip_reputations or {}
     prompt = f"""\
 You are an ops monitoring agent for a Linux server (Debian Bookworm).
 Analyze the data below and produce a digest in EXACTLY four sections,
@@ -101,6 +103,14 @@ Auth-log / fail2ban annotations (under SECURITY):
 - If `fail2ban.enabled=true` and `bans_24h` &gt; 0, summarize it ("fail2ban
   blocked N IPs in 24h, top jail: X"). If `enabled=false`, skip silently —
   fail2ban not being installed is not a finding.
+- If `ip_reputations` has entries with `abuse_score` &gt;= 75, weave them
+  into the existing port-probe / failed-auth lines so the IP gets
+  context: e.g. "scanned by 1.2.3.4 (RU, abuse score 100, 8000 reports)".
+  A high reputation score alone is INFORMATIONAL — most of the public
+  internet shows up on someone's blocklist. Only escalate to Warning if
+  a high-score IP is paired with persistent activity against US (e.g.
+  &gt;20 failed auths or &gt;50 probes from that single IP). If the dict is
+  empty, skip silently — either no key configured or no notable IPs.
 - If `rkhunter.enabled=true` and `total_warnings` &gt; 0, mention briefly
   ("rkhunter: N warnings, last scan TIMESTAMP") and reference the most
   unusual entry from `recent_warnings` if any stand out (suspicious
@@ -149,6 +159,9 @@ Escalation rules:
 
 ## rkhunter Status
 {rkhunter_block}
+
+## IP Reputations (AbuseIPDB)
+{ip_reputations_block}
 
 ## Relevant Security News
 {news}
