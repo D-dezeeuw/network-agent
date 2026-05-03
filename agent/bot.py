@@ -22,9 +22,11 @@ from acks import active_acks, add_ack, remove_ack
 from ai import answer_question
 from charts import render_sparkline as render_sparkline_png
 from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from docker_logs import get_container_logs, list_container_names
 import memory
 from notifications import clear_mute, mute_for, mute_status
 from overrides import is_settable, report_config, set_override, unset_override
+from tg_publish import html_escape
 import tool_mute
 from trends import load_recent, metric_series, render_sparkline
 
@@ -55,6 +57,7 @@ HELP_TEXT = (
     "<b>/news</b> — relevant security news\n"
     "<b>/trend &lt;metric&gt;</b> — sparkline + delta for a metric\n"
     "<b>/chart &lt;metric&gt;</b> — render a chart image for a metric\n"
+    "<b>/logs &lt;container&gt; [lines]</b> — recent docker logs (default 100, max 500)\n"
     "<b>/acks</b> — list active snoozes\n"
     "<b>/unsnooze &lt;id&gt;</b> — remove a snooze by fingerprint\n"
     "<b>/mute_all &lt;hours&gt;</b> — silence all output (incl. criticals)\n"
@@ -79,6 +82,7 @@ BOT_COMMAND_MENU = [
     BotCommand("news", "Relevant security news"),
     BotCommand("trend", "Sparkline + delta for a metric"),
     BotCommand("chart", "Render a chart image for a metric"),
+    BotCommand("logs", "Recent docker logs for a container"),
     BotCommand("acks", "List active snoozes"),
     BotCommand("unsnooze", "Remove a snooze (takes id arg)"),
     BotCommand("mute_all", "Silence all output for N hours"),
@@ -312,6 +316,91 @@ async def cmd_chart(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         log.exception("send_photo failed")
         await update.effective_chat.send_message(f"Couldn't send chart: {e}")
+
+
+LOGS_INLINE_CHAR_CAP = 3500  # Telegram body cap is 4096; leave headroom for HTML wrapper.
+
+
+async def cmd_logs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Stream the tail of a container's logs into the caller's chat.
+
+    Inline `<pre>` block when it fits; uploads as a `.log` document
+    otherwise so longer outputs aren't silently truncated.
+    """
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        names = await asyncio.to_thread(list_container_names)
+        sample = ", ".join(f"<code>{n}</code>" for n in names[:10])
+        more = f" (+{len(names) - 10} more)" if len(names) > 10 else ""
+        await update.effective_chat.send_message(
+            "Usage: <code>/logs &lt;container&gt; [lines]</code>\n"
+            "Default 100 lines, max 500. Substring match works (case-insensitive).\n\n"
+            f"<b>Containers:</b> {sample or '(docker unavailable)'}{more}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    name = args[0].strip()
+    tail = 100
+    if len(args) >= 2:
+        try:
+            tail = int(args[1])
+        except ValueError:
+            await update.effective_chat.send_message(
+                f"Bad lines arg: <code>{html_escape(args[1])}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+    try:
+        result = await asyncio.to_thread(get_container_logs, name, tail)
+    except Exception as e:
+        log.exception("get_container_logs raised")
+        await update.effective_chat.send_message(f"🚨 {e}")
+        return
+
+    if result.get("error"):
+        msg = f"❌ {html_escape(result['error'])}"
+        if result.get("available"):
+            avail = ", ".join(f"<code>{html_escape(n)}</code>" for n in result["available"][:20])
+            msg += f"\n\n<b>Available:</b> {avail}"
+        await update.effective_chat.send_message(msg, parse_mode=ParseMode.HTML)
+        return
+
+    lines = result.get("lines", [])
+    body = "\n".join(lines) if lines else "(no log output)"
+    header = (
+        f"<b>{html_escape(result['name'])}</b> "
+        f"({html_escape(result['status'])}) — "
+        f"last {result['line_count']} line(s)"
+    )
+
+    escaped = html_escape(body)
+    if len(escaped) <= LOGS_INLINE_CHAR_CAP:
+        await update.effective_chat.send_message(
+            f"{header}\n<pre>{escaped}</pre>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    from io import BytesIO
+    buf = BytesIO(body.encode("utf-8"))
+    buf.name = f"{result['name']}.log"
+    try:
+        await update.effective_chat.send_document(
+            document=buf,
+            caption=f"{header}\n<i>(too long for inline — {len(body)} chars)</i>",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        log.exception("send_document failed for /logs")
+        await update.effective_chat.send_message(
+            f"Couldn't upload log file: {html_escape(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def cmd_mute_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -681,6 +770,7 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("unsnooze", cmd_unsnooze))
     app.add_handler(CommandHandler("trend", cmd_trend))
     app.add_handler(CommandHandler("chart", cmd_chart))
+    app.add_handler(CommandHandler("logs", cmd_logs))
     app.add_handler(CommandHandler("mute_all", cmd_mute_all))
     app.add_handler(CommandHandler("unmute_all", cmd_unmute_all))
     app.add_handler(CommandHandler("mute", cmd_mute))
