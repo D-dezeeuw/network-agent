@@ -24,12 +24,15 @@ def test_none_user_id_rejected(monkeypatch):
 
 
 def test_command_queries_match_bot_command_menu():
-    """Every COMMAND_QUERIES entry should appear in BOT_COMMAND_MENU and vice
-    versa for the user-facing commands. /help and /runnow are handled
-    directly and don't need entries in COMMAND_QUERIES."""
+    """Every BOT_COMMAND_MENU entry must either be a COMMAND_QUERIES key
+    (routed through the AI) or a direct cmd_X handler in bot.py."""
     menu_names = {c.command for c in bot.BOT_COMMAND_MENU}
     query_names = set(bot.COMMAND_QUERIES.keys())
-    direct_handlers = {"help", "runnow"}
+    direct_handlers = {
+        "help", "runnow", "acks", "unsnooze", "trend", "chart", "logs",
+        "mute_all", "unmute_all", "mute", "unmute",
+        "set", "unset", "config", "preview", "clearmemory",
+    }
     assert query_names | direct_handlers == menu_names, (
         f"menu/handler drift: only-in-menu={menu_names - (query_names | direct_handlers)}, "
         f"only-in-handlers={(query_names | direct_handlers) - menu_names}"

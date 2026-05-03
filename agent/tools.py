@@ -6,6 +6,7 @@ during the tool-call loop.
 """
 
 from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
+from docker_logs import get_container_logs
 from logs import get_auth_log_summary
 from security_news import fetch_security_news
 from security_scan import run_scan
@@ -69,6 +70,10 @@ def _get_journal_errors(hours: int = 24) -> dict:
 
 def _get_kernel_messages(hours: int = 24) -> dict:
     return check_kernel_messages(hours=hours)
+
+
+def _get_container_logs(name: str, tail: int = 100, since_minutes: int | None = None) -> dict:
+    return get_container_logs(name=name, tail=tail, since_minutes=since_minutes)
 
 
 TOOLS_SCHEMA = [
@@ -176,6 +181,22 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_container_logs",
+            "description": "Fetch recent stdout/stderr from a Docker container by name (exact or substring). Use this to debug 'why is X failing/restarting/erroring' questions — pull logs, then explain what's in them. Returns timestamped lines plus the container's current status. If no container matches the name, the response includes an `available` list of valid names. Substring matches are rejected if ambiguous.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Container name (exact) or case-insensitive substring."},
+                    "tail": {"type": "integer", "default": 100, "description": "Number of trailing log lines to fetch (max 500)."},
+                    "since_minutes": {"type": "integer", "description": "Optional time window — only return lines newer than this many minutes."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
 ]
 
 
@@ -191,6 +212,7 @@ TOOL_IMPLS = {
     "get_reboot_required": _get_reboot_required,
     "get_journal_errors": _get_journal_errors,
     "get_kernel_messages": _get_kernel_messages,
+    "get_container_logs": _get_container_logs,
 }
 
 
