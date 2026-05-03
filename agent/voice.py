@@ -10,7 +10,14 @@ import re
 import subprocess
 
 from ai import _model, client
-from config import TTS_MAX_CHARS, TTS_MODEL, TTS_SPEED, TTS_VOICE
+from config import (
+    TTS_MAX_CHARS,
+    TTS_MODEL,
+    TTS_PCM_SAMPLE_RATE,
+    TTS_RESPONSE_FORMAT,
+    TTS_SPEED,
+    TTS_VOICE,
+)
 from overrides import effective, effective_int
 
 
@@ -98,15 +105,29 @@ Data:
     return _truncate_at_sentence(cleaned, cap)
 
 
-def synthesize_speech(text: str, voice: str | None = None,
-                      model: str | None = None) -> bytes:
-    """Synthesize `text` to MP3 bytes via OpenRouter's TTS endpoint.
+def _resolve_response_format() -> str:
+    """Effective TTS_RESPONSE_FORMAT, normalized + validated."""
+    fmt = (effective("TTS_RESPONSE_FORMAT", TTS_RESPONSE_FORMAT) or "mp3").lower()
+    return fmt if fmt in ("mp3", "pcm") else "mp3"
 
+
+def _resolve_pcm_sample_rate() -> int:
+    return effective_int("TTS_PCM_SAMPLE_RATE", TTS_PCM_SAMPLE_RATE) or 24000
+
+
+def synthesize_speech(text: str, voice: str | None = None,
+                      model: str | None = None,
+                      response_format: str | None = None) -> bytes:
+    """Synthesize `text` to audio bytes via OpenRouter's TTS endpoint.
+
+    Returns raw MP3 or PCM bytes depending on `TTS_RESPONSE_FORMAT`
+    (mp3 by default; pcm for providers like Gemini that don't emit mp3).
     Raises RuntimeError on any synthesis failure so the caller has a
     single exception class to catch and fall back from.
     """
     voice = voice or effective("TTS_VOICE", TTS_VOICE) or "alloy"
     model = model or effective("TTS_MODEL", TTS_MODEL) or TTS_MODEL
+    response_format = (response_format or _resolve_response_format()).lower()
     try:
         speed = float(effective("TTS_SPEED", str(TTS_SPEED)) or "1.0")
     except (TypeError, ValueError):
@@ -116,7 +137,7 @@ def synthesize_speech(text: str, voice: str | None = None,
             model=model,
             voice=voice,
             input=text,
-            response_format="mp3",
+            response_format=response_format,
             speed=speed,
         )
         # SDK exposes .read() (preferred) and .content. Try .read() first
@@ -128,20 +149,24 @@ def synthesize_speech(text: str, voice: str | None = None,
         raise RuntimeError(f"TTS synthesis failed: {e}") from e
 
 
-def mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes:
-    """Transcode MP3 → OGG-Opus via ffmpeg pipe.
+def _ffmpeg_input_args(source_format: str, sample_rate: int) -> list[str]:
+    """Input flags telling ffmpeg how to read the upstream bytes.
 
-    Required for Telegram's voice-message bubble (sendVoice expects
-    OGG-Opus, and OpenRouter's TTS only emits MP3 or PCM). 32kbps
-    Opus matches Telegram's own voice-message bitrate.
+    For raw PCM there's no container — we have to declare the codec,
+    sample rate, and channel layout ourselves. OpenRouter's PCM is
+    documented as signed 16-bit little-endian mono.
     """
+    if source_format == "pcm":
+        return ["-f", "s16le", "-ar", str(sample_rate), "-ac", "1",
+                "-i", "pipe:0"]
+    return ["-i", "pipe:0"]
+
+
+def _run_ffmpeg(args: list[str], audio_bytes: bytes) -> bytes:
     try:
         proc = subprocess.run(
-            ["ffmpeg", "-loglevel", "error",
-             "-i", "pipe:0",
-             "-c:a", "libopus", "-b:a", "32k", "-ar", "48000",
-             "-f", "ogg", "pipe:1"],
-            input=mp3_bytes,
+            ["ffmpeg", "-loglevel", "error", *args],
+            input=audio_bytes,
             capture_output=True,
             check=True,
             timeout=30,
@@ -154,3 +179,36 @@ def mp3_to_ogg_opus(mp3_bytes: bytes) -> bytes:
         raise RuntimeError(f"transcode failed: {stderr}") from e
     except subprocess.TimeoutExpired as e:
         raise RuntimeError("transcode timed out") from e
+
+
+def to_ogg_opus(audio_bytes: bytes, source_format: str = "mp3",
+                sample_rate: int | None = None) -> bytes:
+    """Transcode upstream TTS audio (MP3 or raw PCM) → OGG-Opus.
+
+    Required for Telegram's voice-message bubble (sendVoice expects
+    OGG-Opus). 32kbps Opus matches Telegram's own voice bitrate.
+    `sample_rate` only matters for `source_format="pcm"` — it must
+    match the rate the TTS provider emitted at.
+    """
+    rate = sample_rate or _resolve_pcm_sample_rate()
+    args = [
+        *_ffmpeg_input_args(source_format, rate),
+        "-c:a", "libopus", "-b:a", "32k", "-ar", "48000",
+        "-f", "ogg", "pipe:1",
+    ]
+    return _run_ffmpeg(args, audio_bytes)
+
+
+def pcm_to_mp3(pcm_bytes: bytes, sample_rate: int | None = None) -> bytes:
+    """Wrap raw PCM in an MP3 container so Telegram sendAudio can play it.
+
+    Used when TTS_RESPONSE_FORMAT=pcm and TTS_AS_VOICE_MESSAGE=false
+    (audio-attachment mode rather than voice bubble).
+    """
+    rate = sample_rate or _resolve_pcm_sample_rate()
+    args = [
+        *_ffmpeg_input_args("pcm", rate),
+        "-c:a", "libmp3lame", "-b:a", "64k",
+        "-f", "mp3", "pipe:1",
+    ]
+    return _run_ffmpeg(args, pcm_bytes)

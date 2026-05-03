@@ -27,6 +27,8 @@ TTS_VOICE = os.getenv("TTS_VOICE", "alloy")
 TTS_AS_VOICE_MESSAGE = os.getenv("TTS_AS_VOICE_MESSAGE", "true").lower() == "true"
 TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "3000"))
 TTS_SPEED = float(os.getenv("TTS_SPEED", "1.0"))
+TTS_RESPONSE_FORMAT = os.getenv("TTS_RESPONSE_FORMAT", "mp3")
+TTS_PCM_SAMPLE_RATE = int(os.getenv("TTS_PCM_SAMPLE_RATE", "24000"))
 
 SECURITY_FEEDS = [
     "https://www.debian.org/security/dsa",

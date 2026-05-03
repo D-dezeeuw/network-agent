@@ -38,6 +38,8 @@ SETTABLE_KEYS = {
     "TTS_AS_VOICE_MESSAGE": _coerce_str,
     "TTS_MAX_CHARS": _coerce_int,
     "TTS_SPEED": _coerce_str,
+    "TTS_RESPONSE_FORMAT": _coerce_str,
+    "TTS_PCM_SAMPLE_RATE": _coerce_int,
 }
 
 

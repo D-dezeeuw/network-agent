@@ -24,6 +24,8 @@ services:
       TTS_AS_VOICE_MESSAGE: ${TTS_AS_VOICE_MESSAGE:-true}
       TTS_MAX_CHARS: ${TTS_MAX_CHARS:-3000}
       TTS_SPEED: ${TTS_SPEED:-1.0}
+      TTS_RESPONSE_FORMAT: ${TTS_RESPONSE_FORMAT:-mp3}
+      TTS_PCM_SAMPLE_RATE: ${TTS_PCM_SAMPLE_RATE:-24000}
     volumes:
       - /var/log:/host/logs:ro
       - /run/log/journal:/run/log/journal:ro

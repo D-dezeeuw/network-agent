@@ -134,41 +134,130 @@ def test_synthesize_speech_wraps_sdk_errors():
         voice.synthesize_speech("x")
 
 
-# --- mp3_to_ogg_opus ----------------------------------------------------------
+# --- response_format / sample-rate resolvers ---------------------------------
 
-def test_mp3_to_ogg_opus_invokes_ffmpeg_with_libopus():
+def test_resolve_response_format_defaults_to_mp3():
+    assert voice._resolve_response_format() == "mp3"
+
+
+def test_resolve_response_format_normalizes_case(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("TTS_RESPONSE_FORMAT", "PCM")
+    assert voice._resolve_response_format() == "pcm"
+
+
+def test_resolve_response_format_rejects_unknown_falls_back_to_mp3(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("TTS_RESPONSE_FORMAT", "flac")
+    assert voice._resolve_response_format() == "mp3"
+
+
+def test_resolve_pcm_sample_rate_uses_override(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("TTS_PCM_SAMPLE_RATE", "16000")
+    assert voice._resolve_pcm_sample_rate() == 16000
+
+
+# --- synthesize_speech response_format ---------------------------------------
+
+def test_synthesize_speech_uses_pcm_when_configured(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("TTS_RESPONSE_FORMAT", "pcm")
+    fake_resp = MagicMock()
+    fake_resp.read.return_value = b"raw-pcm-bytes"
+    with patch.object(voice.client.audio.speech, "create",
+                      return_value=fake_resp) as create:
+        voice.synthesize_speech("x")
+    assert create.call_args.kwargs["response_format"] == "pcm"
+
+
+def test_synthesize_speech_explicit_arg_overrides_env():
+    fake_resp = MagicMock()
+    fake_resp.read.return_value = b""
+    with patch.object(voice.client.audio.speech, "create",
+                      return_value=fake_resp) as create:
+        voice.synthesize_speech("x", response_format="pcm")
+    assert create.call_args.kwargs["response_format"] == "pcm"
+
+
+# --- to_ogg_opus -------------------------------------------------------------
+
+def test_to_ogg_opus_default_mp3_input_omits_pcm_flags():
     fake_proc = MagicMock(stdout=b"OggS\x00...")
     with patch("voice.subprocess.run", return_value=fake_proc) as run:
-        out = voice.mp3_to_ogg_opus(b"mp3-data")
+        out = voice.to_ogg_opus(b"mp3-data")
     assert out.startswith(b"OggS")
     cmd = run.call_args.args[0]
-    assert "ffmpeg" in cmd
     assert "libopus" in cmd
-    assert "pipe:0" in cmd
-    assert "pipe:1" in cmd
+    # Implicit-format MP3 input should NOT carry raw-PCM flags
+    assert "s16le" not in cmd
 
 
-def test_mp3_to_ogg_opus_raises_when_ffmpeg_missing():
+def test_to_ogg_opus_pcm_input_declares_format_and_rate():
+    fake_proc = MagicMock(stdout=b"OggS\x00...")
+    with patch("voice.subprocess.run", return_value=fake_proc) as run:
+        voice.to_ogg_opus(b"raw-pcm", source_format="pcm", sample_rate=16000)
+    cmd = run.call_args.args[0]
+    # Raw PCM input requires explicit container, sample rate, channels
+    assert "s16le" in cmd
+    assert "16000" in cmd
+    assert "libopus" in cmd
+
+
+def test_to_ogg_opus_uses_resolved_sample_rate_when_unspecified(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("TTS_PCM_SAMPLE_RATE", "48000")
+    fake_proc = MagicMock(stdout=b"OggS")
+    with patch("voice.subprocess.run", return_value=fake_proc) as run:
+        voice.to_ogg_opus(b"raw-pcm", source_format="pcm")
+    cmd = run.call_args.args[0]
+    assert "48000" in cmd
+
+
+def test_to_ogg_opus_raises_when_ffmpeg_missing():
     with (
         patch("voice.subprocess.run", side_effect=FileNotFoundError),
         pytest.raises(RuntimeError, match="ffmpeg not installed"),
     ):
-        voice.mp3_to_ogg_opus(b"x")
+        voice.to_ogg_opus(b"x")
 
 
-def test_mp3_to_ogg_opus_wraps_ffmpeg_errors():
+def test_to_ogg_opus_wraps_ffmpeg_errors():
     err = subprocess.CalledProcessError(1, "ffmpeg", stderr=b"invalid input")
     with (
         patch("voice.subprocess.run", side_effect=err),
         pytest.raises(RuntimeError, match="invalid input"),
     ):
-        voice.mp3_to_ogg_opus(b"x")
+        voice.to_ogg_opus(b"x")
 
 
-def test_mp3_to_ogg_opus_wraps_timeout():
+def test_to_ogg_opus_wraps_timeout():
     err = subprocess.TimeoutExpired("ffmpeg", 30)
     with (
         patch("voice.subprocess.run", side_effect=err),
         pytest.raises(RuntimeError, match="timed out"),
     ):
-        voice.mp3_to_ogg_opus(b"x")
+        voice.to_ogg_opus(b"x")
+
+
+# --- pcm_to_mp3 --------------------------------------------------------------
+
+def test_pcm_to_mp3_invokes_libmp3lame_with_pcm_input_flags():
+    fake_proc = MagicMock(stdout=b"\xff\xfbmp3...")
+    with patch("voice.subprocess.run", return_value=fake_proc) as run:
+        out = voice.pcm_to_mp3(b"raw-pcm", sample_rate=24000)
+    assert out.startswith(b"\xff\xfb")
+    cmd = run.call_args.args[0]
+    assert "libmp3lame" in cmd
+    assert "s16le" in cmd
+    assert "24000" in cmd
+    # MP3 codec should not be confused with the libopus voice path
+    assert "libopus" not in cmd
+
+
+def test_pcm_to_mp3_raises_when_ffmpeg_missing():
+    with (
+        patch("voice.subprocess.run", side_effect=FileNotFoundError),
+        pytest.raises(RuntimeError, match="ffmpeg not installed"),
+    ):
+        voice.pcm_to_mp3(b"x")
