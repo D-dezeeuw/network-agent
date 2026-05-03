@@ -19,6 +19,9 @@ services:
       TELEGRAM_AUTHORIZED_USERS: ${TELEGRAM_AUTHORIZED_USERS:-}
       LOG_PATH: ${LOG_PATH:-/host/logs/auth.log}
       RKHUNTER_LOG_PATH: ${RKHUNTER_LOG_PATH:-/host/logs/rkhunter/reports/rkhunter-combined.log}
+      ABUSEIPDB_API_KEY: ${ABUSEIPDB_API_KEY:-}
+      ABUSEIPDB_CACHE_TTL_HOURS: ${ABUSEIPDB_CACHE_TTL_HOURS:-24}
+      ABUSEIPDB_LOOKUP_LIMIT: ${ABUSEIPDB_LOOKUP_LIMIT:-10}
       RESET_BASELINE: ${RESET_BASELINE:-false}
       TTS_MODEL: ${TTS_MODEL:-openai/gpt-4o-mini-tts-2025-12-15}
       TTS_VOICE: ${TTS_VOICE:-alloy}

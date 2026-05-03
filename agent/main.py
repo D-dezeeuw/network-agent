@@ -10,6 +10,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from config import OPENROUTER_MODEL, REPORT_HOUR, REPORT_INTERVAL_HOURS, RESET_BASELINE
+import abuseipdb
 from fail2ban import get_status as get_fail2ban_status
 from rkhunter import get_status as get_rkhunter_status
 from findings import enumerate_findings, filter_unsnoozed, strip_snoozed_from_data
@@ -82,6 +83,14 @@ def collect_inputs() -> dict:
     if is_source_muted("kernel") and isinstance(health, dict):
         health.pop("kernel_messages_24h", None)
 
+    if is_source_muted("abuseipdb"):
+        ip_reputations: dict = {}
+    else:
+        ip_reputations = abuseipdb.enrich(
+            None if isinstance(logs, dict) and logs.get("_muted") else logs,
+            None if isinstance(fail2ban_status, dict) and fail2ban_status.get("_muted") else fail2ban_status,
+        )
+
     return {
         "metrics": metrics_summary,
         "logs": logs,
@@ -90,6 +99,7 @@ def collect_inputs() -> dict:
         "security": security,
         "health": health,
         "rkhunter": rkhunter_status,
+        "ip_reputations": ip_reputations,
     }
 
 
@@ -113,6 +123,7 @@ def run_agent(target_chat_id: int | str | None = None,
     security = inputs["security"]
     health = inputs["health"]
     rkhunter_status = inputs["rkhunter"]
+    ip_reputations = inputs["ip_reputations"]
 
     snoozed = snoozed_fingerprints()
     sec_filtered, health_filtered = strip_snoozed_from_data(security, health, snoozed)
@@ -131,7 +142,7 @@ def run_agent(target_chat_id: int | str | None = None,
         prune_snapshots()
 
     parts = generate_report(metrics_summary, logs, news, sec_filtered, health_filtered,
-                            trends, fail2ban_status, rkhunter_status)
+                            trends, fail2ban_status, rkhunter_status, ip_reputations)
 
     if force:
         allow_digest, reason = True, "forced"
@@ -170,6 +181,7 @@ def run_agent(target_chat_id: int | str | None = None,
             auth=logs,
             fail2ban=fail2ban_status,
             rkhunter=rkhunter_status,
+            ip_reputations=ip_reputations,
             news=news,
             active_alarms=metrics_summary.get("active_alarms") if isinstance(metrics_summary, dict) else None,
             active_acks=active_acks(),
@@ -198,6 +210,7 @@ def _archive_report(**kwargs) -> None:
             auth=kwargs.get("auth"),
             fail2ban=kwargs.get("fail2ban"),
             rkhunter=kwargs.get("rkhunter"),
+            ip_reputations=kwargs.get("ip_reputations"),
             news=kwargs.get("news"),
             active_alarms=kwargs.get("active_alarms"),
             active_acks=kwargs.get("active_acks"),

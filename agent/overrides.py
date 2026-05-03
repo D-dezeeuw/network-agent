@@ -40,6 +40,8 @@ SETTABLE_KEYS = {
     "TTS_SPEED": _coerce_str,
     "TTS_RESPONSE_FORMAT": _coerce_str,
     "TTS_PCM_SAMPLE_RATE": _coerce_int,
+    "ABUSEIPDB_CACHE_TTL_HOURS": _coerce_int,
+    "ABUSEIPDB_LOOKUP_LIMIT": _coerce_int,
 }
 
 

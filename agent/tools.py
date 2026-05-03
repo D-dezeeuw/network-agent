@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
 from docker_logs import get_container_logs
+import abuseipdb
 from fail2ban import get_status as get_fail2ban_status
 from rkhunter import get_status as get_rkhunter_status
 from logs import get_auth_log_summary
@@ -87,6 +88,14 @@ def _get_fail2ban_status() -> dict:
 
 def _get_rkhunter_status() -> dict:
     return get_rkhunter_status()
+
+
+def _get_abuseipdb_report(ip: str) -> dict:
+    record = abuseipdb.lookup(ip)
+    if record is None:
+        return {"ip": ip, "available": False,
+                "reason": "no API key set, invalid IP, or lookup failed"}
+    return {"ip": ip, "available": True, **record}
 
 
 def _get_report_history(days: int = 7, limit: int | None = None) -> list[dict]:
@@ -249,6 +258,20 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "get_abuseipdb_report",
+            "description": "Look up an IP's public abuse reputation via AbuseIPDB: confidence score 0-100, country, ISP, total reports, last-reported timestamp. Use for questions about a specific IP ('who's 1.2.3.4', 'why was this IP banned'). Returns `available: false` if no API key is set or the IP couldn't be resolved. Cache TTL is 24h by default so repeated questions don't burn quota.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ip": {"type": "string", "description": "IPv4 or IPv6 address to look up."},
+                },
+                "required": ["ip"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_report_history",
             "description": "Return COMPACT summaries (timestamp, verdict, finding/critical counts, ban count, sent y/n) of past digest cycles in the last N days. NOT the full digests — context-cheap. Use for 'what's been happening lately', 'how many criticals last week', 'when did we last have a quiet day' questions.",
             "parameters": {
@@ -305,6 +328,7 @@ TOOL_IMPLS = {
     "get_container_logs": _get_container_logs,
     "get_fail2ban_status": _get_fail2ban_status,
     "get_rkhunter_status": _get_rkhunter_status,
+    "get_abuseipdb_report": _get_abuseipdb_report,
     "get_report_history": _get_report_history,
     "get_report_detail": _get_report_detail,
     "get_history_stats": _get_history_stats,
