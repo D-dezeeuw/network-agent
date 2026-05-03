@@ -16,14 +16,14 @@ Six-phase rollout to evolve the network-agent's Telegram UX from a single-messag
 **Goal:** make commands discoverable via the `/` menu and replace the wall-of-text digest with skimmable, well-formatted messages.
 **Branch:** `feat/phase-1-foundation`
 
-- [ ] Add slash-command handlers in `agent/bot.py`: `/status`, `/disks`, `/containers`, `/security`, `/updates`, `/news`, `/help`
-- [ ] Each command maps to a single existing tool from `agent/tools.py`
-- [ ] On startup, register the command list with Telegram via `setMyCommands` so the `/` menu auto-populates
-- [ ] Switch `parse_mode` from `Markdown` to `HTML` in `tg_publish.py` and bot replies
-- [ ] Update the digest prompt in `ai.py` to emit HTML (`<b>`, `<code>`, `<i>`)
-- [ ] Restructure the digest into 4 sequential messages: (1) status header, (2) security findings, (3) system health, (4) news & metrics
-- [ ] Add `send_messages(parts: list[str])` helper in `tg_publish.py` for ordered multi-part sends with a small inter-message delay
-- [ ] Tests: slash-command routing, HTML escaping helper
+- [x] Add slash-command handlers in `agent/bot.py`: `/status`, `/disks`, `/containers`, `/security`, `/updates`, `/news`, `/help`
+- [x] Each command maps to a single existing tool from `agent/tools.py`
+- [x] On startup, register the command list with Telegram via `setMyCommands` so the `/` menu auto-populates
+- [x] Switch `parse_mode` from `Markdown` to `HTML` in `tg_publish.py` and bot replies
+- [x] Update the digest prompt in `ai.py` to emit HTML (`<b>`, `<code>`, `<i>`)
+- [x] Restructure the digest into 4 sequential messages: (1) status header, (2) security findings, (3) system health, (4) news & metrics
+- [x] Add `send_messages(parts: list[str])` helper in `tg_publish.py` for ordered multi-part sends with a small inter-message delay
+- [x] Tests: slash-command routing, HTML escaping helper
 
 **Acceptance:** typing `/` in chat shows the command menu; the daily digest arrives as four distinct messages with proper bold/code formatting.
 
