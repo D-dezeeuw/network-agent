@@ -20,6 +20,7 @@ from telegram.ext import (
 
 from acks import active_acks, add_ack, remove_ack
 from ai import answer_question
+from charts import render_sparkline as render_sparkline_png
 from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from trends import load_recent, metric_series, render_sparkline
 
@@ -49,6 +50,7 @@ HELP_TEXT = (
     "<b>/updates</b> — pending package updates\n"
     "<b>/news</b> — relevant security news\n"
     "<b>/trend &lt;metric&gt;</b> — sparkline + delta for a metric\n"
+    "<b>/chart &lt;metric&gt;</b> — render a chart image for a metric\n"
     "<b>/acks</b> — list active snoozes\n"
     "<b>/unsnooze &lt;id&gt;</b> — remove a snooze by fingerprint\n"
     "<b>/help</b> — this menu\n\n"
@@ -63,6 +65,7 @@ BOT_COMMAND_MENU = [
     BotCommand("updates", "Pending package updates"),
     BotCommand("news", "Relevant security news"),
     BotCommand("trend", "Sparkline + delta for a metric"),
+    BotCommand("chart", "Render a chart image for a metric"),
     BotCommand("acks", "List active snoozes"),
     BotCommand("unsnooze", "Remove a snooze (takes id arg)"),
     BotCommand("runnow", "Trigger full digest now"),
@@ -241,6 +244,54 @@ async def cmd_trend(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML)
 
 
+async def cmd_chart(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        available = ", ".join(sorted(TREND_METRIC_KEYS.keys()))
+        await update.effective_chat.send_message(
+            "Usage: <code>/chart &lt;metric&gt;</code>\n"
+            f"Built-in: <code>{available}</code>\n"
+            "Disks: <code>/chart disk:/var/lib/docker</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    metric = args[0].strip()
+    snap_key = TREND_METRIC_KEYS.get(metric, metric)
+
+    snapshots = load_recent()
+    series = metric_series(snapshots, snap_key)
+    if len(series) < 2:
+        await update.effective_chat.send_message(
+            f"Not enough snapshots yet for <code>{metric}</code> "
+            f"(have {len(series)}, need ≥2). Wait for more digest cycles.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        png = render_sparkline_png(series, title=f"{metric} ({len(series)} pts)")
+    except Exception as e:
+        log.exception("chart render failed")
+        await update.effective_chat.send_message(f"Chart render failed: {e}")
+        return
+
+    # /chart replies live in the chat the command came from, not the digest
+    # destination. Use the bot's send_photo path rather than tg_publish.
+    try:
+        await update.effective_chat.send_photo(
+            photo=png,
+            caption=f"<b>{metric}</b> latest: {series[-1]:.2f}",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        log.exception("send_photo failed")
+        await update.effective_chat.send_message(f"Couldn't send chart: {e}")
+
+
 _SNOOZE_DURATIONS = {"s24": ("24h", 24), "s7d": ("7 days", 24 * 7)}
 
 
@@ -363,6 +414,7 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("acks", cmd_acks))
     app.add_handler(CommandHandler("unsnooze", cmd_unsnooze))
     app.add_handler(CommandHandler("trend", cmd_trend))
+    app.add_handler(CommandHandler("chart", cmd_chart))
     for cmd, query in COMMAND_QUERIES.items():
         app.add_handler(CommandHandler(cmd, _make_query_handler(query)))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ack:"))

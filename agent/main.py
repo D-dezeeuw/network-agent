@@ -19,12 +19,14 @@ from trends import (
     compute_deltas,
     extract_snapshot,
     load_recent,
+    metric_series,
     previous_snapshot,
     prune_snapshots,
     save_snapshot,
 )
 from ai import generate_report
-from tg_publish import send_message_with_buttons, send_messages
+from charts import render_sparkline, render_status_grid
+from tg_publish import send_message_with_buttons, send_messages, send_photo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,7 +69,49 @@ def run_agent() -> None:
     success = send_messages(parts)
     log.info("Report sent: %d parts, ok=%s", len(parts), success)
 
+    _send_digest_charts(history + [current_snap], health_filtered)
     _send_finding_buttons(active_findings)
+
+
+def _send_digest_charts(snapshots: list[dict], health: dict) -> None:
+    """Append visual charts after the text digest.
+
+    Sends a status grid (containers + disk usage) always, plus per-metric
+    sparklines for CPU and RAM if there are at least 2 snapshots to plot.
+    Each chart is rendered once per cycle — no in-process cache needed
+    because run_agent is short-lived per invocation.
+    """
+    cache: dict[str, bytes] = {}
+
+    def _render(key: str, fn) -> bytes | None:
+        if key in cache:
+            return cache[key]
+        try:
+            blob = fn()
+            cache[key] = blob
+            return blob
+        except Exception as e:
+            log.warning("chart render failed for %s: %s", key, e)
+            return None
+
+    docker = (health or {}).get("docker_containers") or {}
+    containers = docker.get("all_containers") or docker.get("concerning") or []
+    disks = {}
+    if snapshots:
+        disks = (snapshots[-1].get("disks") or {})
+
+    grid = _render("status_grid",
+                   lambda: render_status_grid(containers, disks))
+    if grid:
+        send_photo(grid, caption="<b>System status</b>")
+
+    for metric_key, label in (("cpu_avg", "CPU avg %"), ("ram_avg", "RAM avg %")):
+        series = metric_series(snapshots, metric_key)
+        if len(series) < 2:
+            continue
+        png = _render(metric_key, lambda s=series, l=label: render_sparkline(s, l))
+        if png:
+            send_photo(png)
 
 
 def _send_finding_buttons(findings) -> None:

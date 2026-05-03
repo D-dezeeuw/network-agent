@@ -51,6 +51,32 @@ def send_message(text: str) -> bool:
     return success
 
 
+def send_photo(image_bytes: bytes, caption: str = "") -> bool:
+    """Upload a PNG (or other image) to the configured chat.
+
+    Caption supports HTML formatting and is capped at 1024 chars (Telegram).
+    Anything longer should go as a separate text message.
+    """
+    if not image_bytes:
+        return True
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "parse_mode": "HTML"}
+    if caption:
+        data["caption"] = caption[:1024]
+    try:
+        r = requests.post(
+            url,
+            data=data,
+            files={"photo": ("chart.png", image_bytes, "image/png")},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return True
+    except requests.RequestException as e:
+        print(f"[telegram] Failed to send photo: {e}")
+        return False
+
+
 def send_message_with_buttons(text: str, buttons: list[list[tuple[str, str]]]) -> bool:
     """Send a single message with an inline keyboard.
 
