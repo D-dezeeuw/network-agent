@@ -1,0 +1,41 @@
+version: "3.8"
+
+services:
+  network-agent:
+    build: .
+    container_name: network-agent
+    restart: unless-stopped
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-sonnet-4.5}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      NETDATA_BASE_URL: ${NETDATA_BASE_URL:-http://netdata:19999}
+      REPORT_HOUR: ${REPORT_HOUR:-8}
+      LOG_PATH: ${LOG_PATH:-/host/logs/auth.log}
+      RESET_BASELINE: ${RESET_BASELINE:-false}
+    volumes:
+      - /var/log:/host/logs:ro
+      - /run/log/journal:/run/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /proc:/host/proc:ro
+      - /etc:/host/etc:ro
+      - /root:/host/root:ro
+      - /home:/host/home:ro
+      - /var/spool/cron:/host/var/spool/cron:ro
+      - /run:/host/run:ro
+      - /var/lib/apt:/host/var/lib/apt:ro
+      - /var/lib/dpkg:/host/var/lib/dpkg:ro
+      - /var/cache/apt:/host/var/cache/apt:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - network-agent-state:/state
+    networks:
+      - monitoring
+
+volumes:
+  network-agent-state:
+
+networks:
+  monitoring:
+    external: true
