@@ -32,6 +32,7 @@ SETTABLE_KEYS = {
     "QUIET_HOURS": _coerce_str,
     "REPORT_HOUR": _coerce_int,
     "REPORT_INTERVAL_HOURS": _coerce_int,
+    "REPORTS_RETENTION_DAYS": _coerce_int,
 }
 
 

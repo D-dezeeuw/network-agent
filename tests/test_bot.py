@@ -112,3 +112,61 @@ def test_resolve_digest_chat_id_returns_int(monkeypatch):
 def test_resolve_digest_chat_id_returns_none_when_unset(monkeypatch):
     monkeypatch.setattr(bot, "TELEGRAM_CHAT_ID", None)
     assert bot._resolve_digest_chat_id() is None
+
+
+# --- /history arg parsing helpers -------------------------------------------
+
+def test_parse_int_arg_in_range():
+    assert bot._parse_int_arg("10", lo=1, hi=30) == 10
+    assert bot._parse_int_arg("1", lo=1, hi=30) == 1
+    assert bot._parse_int_arg("30", lo=1, hi=30) == 30
+
+
+def test_parse_int_arg_out_of_range():
+    assert bot._parse_int_arg("0", lo=1, hi=30) is None
+    assert bot._parse_int_arg("31", lo=1, hi=30) is None
+
+
+def test_parse_int_arg_non_numeric_returns_none():
+    assert bot._parse_int_arg("fail2ban") is None
+    assert bot._parse_int_arg("") is None
+
+
+def test_format_history_row_critical_marker():
+    """Rows with criticals must visibly call them out — that's the whole
+    point of the table. Don't let the formatting lose that signal."""
+    row = bot._format_history_row({
+        "timestamp": "2026-05-03T08:00:00Z",
+        "verdict": "🚨",
+        "findings_total": 5,
+        "findings_critical": 2,
+        "bans_24h": 7,
+        "digest_sent": True,
+        "suppression_reason": None,
+    })
+    assert "(2!)" in row
+    assert "🚨" in row
+    assert "7b" in row
+
+
+def test_format_history_row_skip_reason():
+    row = bot._format_history_row({
+        "timestamp": "2026-05-03T08:00:00Z",
+        "verdict": "✅",
+        "findings_total": 0,
+        "findings_critical": 0,
+        "bans_24h": None,
+        "digest_sent": False,
+        "suppression_reason": "quiet_hours",
+    })
+    assert "skip" in row
+    assert "quiet_hours" in row
+
+
+def test_history_command_present_in_menu():
+    """Make sure /history is wired into the BOT_COMMAND_MENU."""
+    menu = {c.command for c in bot.BOT_COMMAND_MENU}
+    assert "history" in menu
+    assert "stats" in menu
+    assert "report" in menu
+    assert "export" in menu

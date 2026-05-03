@@ -5,7 +5,10 @@ through the AI tool-call loop. Co-exists with the scheduled digest.
 """
 
 import asyncio
+import json
 import logging
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
 from telegram import BotCommand, Update
 from telegram.constants import ParseMode
@@ -20,12 +23,14 @@ from telegram.ext import (
 
 from acks import active_acks, add_ack, remove_ack
 from ai import answer_question
-from charts import render_sparkline as render_sparkline_png
+from charts import render_history_chart, render_sparkline as render_sparkline_png
 from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from docker_logs import get_container_logs, list_container_names
+from history_metrics import known_metrics, metric_info, series_for_metric
 import memory
 from notifications import clear_mute, mute_for, mute_status
 from overrides import is_settable, report_config, set_override, unset_override
+import reports
 from tg_publish import html_escape
 import tool_mute
 from trends import load_recent, metric_series, render_sparkline
@@ -58,6 +63,11 @@ HELP_TEXT = (
     "<b>/trend &lt;metric&gt;</b> — sparkline + delta for a metric\n"
     "<b>/chart &lt;metric&gt;</b> — render a chart image for a metric\n"
     "<b>/logs &lt;container&gt; [lines]</b> — recent docker logs (default 100, max 500)\n"
+    "<b>/history [N]</b> — table of last N cycles (default 10)\n"
+    "<b>/history &lt;metric&gt; [days]</b> — graph of a metric over time\n"
+    "<b>/stats [days]</b> — aggregates over last N days (default 7)\n"
+    "<b>/report &lt;date&gt;</b> — replay a past digest by ISO date prefix\n"
+    "<b>/export [N]</b> — upload last N reports as JSON file\n"
     "<b>/acks</b> — list active snoozes\n"
     "<b>/unsnooze &lt;id&gt;</b> — remove a snooze by fingerprint\n"
     "<b>/mute_all &lt;hours&gt;</b> — silence all output (incl. criticals)\n"
@@ -83,6 +93,10 @@ BOT_COMMAND_MENU = [
     BotCommand("trend", "Sparkline + delta for a metric"),
     BotCommand("chart", "Render a chart image for a metric"),
     BotCommand("logs", "Recent docker logs for a container"),
+    BotCommand("history", "Past cycles — table or graph"),
+    BotCommand("stats", "Aggregate stats over N days"),
+    BotCommand("report", "Replay a past digest by date"),
+    BotCommand("export", "Upload last N reports as JSON"),
     BotCommand("acks", "List active snoozes"),
     BotCommand("unsnooze", "Remove a snooze (takes id arg)"),
     BotCommand("mute_all", "Silence all output for N hours"),
@@ -320,6 +334,35 @@ async def cmd_chart(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 LOGS_INLINE_CHAR_CAP = 3500  # Telegram body cap is 4096; leave headroom for HTML wrapper.
 
+HISTORY_TABLE_MAX = 30
+HISTORY_GRAPH_MAX_DAYS = 365
+EXPORT_MAX = 365
+
+
+def _parse_int_arg(raw: str, lo: int = 1, hi: int = 1_000_000) -> int | None:
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if not (lo <= n <= hi):
+        return None
+    return n
+
+
+def _format_history_row(summary: dict) -> str:
+    """One line of the /history text table."""
+    ts = summary.get("timestamp", "?")
+    # Trim ISO timestamp to YYYY-MM-DD HH:MM for readability
+    short_ts = ts[:16].replace("T", " ") if isinstance(ts, str) else "?"
+    verdict = summary.get("verdict", "?")
+    findings = summary.get("findings_total", 0)
+    crit = summary.get("findings_critical", 0)
+    crit_str = f" ({crit}!)" if crit > 0 else ""
+    bans = summary.get("bans_24h")
+    bans_str = f" • {bans}b" if bans is not None else ""
+    sent = "sent" if summary.get("digest_sent") else f"skip ({summary.get('suppression_reason') or '?'})"
+    return f"<code>{short_ts}</code> {verdict} {findings}f{crit_str}{bans_str} • {sent}"
+
 
 async def cmd_logs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Stream the tail of a container's logs into the caller's chat.
@@ -386,7 +429,6 @@ async def cmd_logs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    from io import BytesIO
     buf = BytesIO(body.encode("utf-8"))
     buf.name = f"{result['name']}.log"
     try:
@@ -399,6 +441,235 @@ async def cmd_logs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         log.exception("send_document failed for /logs")
         await update.effective_chat.send_message(
             f"Couldn't upload log file: {html_escape(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def cmd_history(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Dual-mode: text table (no metric) or PNG graph (metric name).
+
+    `/history`            → last 10 cycles, text table
+    `/history 30`         → last 30 cycles, text table
+    `/history fail2ban`   → 30-day graph for fail2ban metric
+    `/history fail2ban 7` → 7-day graph
+    `/history help`       → list of available metrics
+    """
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    chat = update.effective_chat
+    args = ctx.args or []
+
+    # `/history help` — list metrics
+    if args and args[0].lower() == "help":
+        lines = ["<b>/history</b> — past cycle data\n",
+                 "<b>Text table:</b> <code>/history [N]</code> (default 10, max 30)\n",
+                 "<b>Graph:</b> <code>/history &lt;metric&gt; [days]</code>\n",
+                 "<b>Available metrics:</b>"]
+        for name in known_metrics():
+            info = metric_info(name)
+            lines.append(f"  <code>{name}</code> — {info['label']}")
+        await chat.send_message("\n".join(lines), parse_mode=ParseMode.HTML)
+        return
+
+    # No args OR first arg is an int → text-table mode
+    if not args or _parse_int_arg(args[0], lo=1, hi=HISTORY_TABLE_MAX) is not None:
+        n = _parse_int_arg(args[0], lo=1, hi=HISTORY_TABLE_MAX) if args else 10
+        n = n or 10
+        records = await asyncio.to_thread(reports.load_reports, None, n)
+        if not records:
+            await chat.send_message(
+                "No cycles archived yet. Reports are written from the next digest forward.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        rows = [_format_history_row(reports.summarize_for_table(r))
+                for r in reversed(records)]  # newest first
+        await chat.send_message(
+            f"<b>Last {len(records)} cycle(s)</b>\n" + "\n".join(rows),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    # Graph mode: first arg is a metric name
+    metric_name = args[0].lower().strip()
+    info = metric_info(metric_name)
+    if info is None:
+        avail = ", ".join(f"<code>{m}</code>" for m in known_metrics())
+        await chat.send_message(
+            f"Unknown metric <code>{html_escape(metric_name)}</code>.\n"
+            f"<b>Available:</b> {avail}\n"
+            f"Or run <code>/history help</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    days = 30
+    if len(args) >= 2:
+        parsed = _parse_int_arg(args[1], lo=1, hi=HISTORY_GRAPH_MAX_DAYS)
+        if parsed is None:
+            await chat.send_message(
+                f"Bad days arg <code>{html_escape(args[1])}</code> "
+                f"(want 1–{HISTORY_GRAPH_MAX_DAYS}).",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        days = parsed
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    records = await asyncio.to_thread(reports.load_reports, since, None)
+    points = series_for_metric(records, metric_name)
+
+    if len(points) < 2:
+        await chat.send_message(
+            f"Not enough data for <code>{metric_name}</code> over {days}d "
+            f"(have {len(points)}, need ≥2). Wait for more digest cycles "
+            "or widen the window.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        png = render_history_chart(
+            points, title=info["title"], ylabel=info["ylabel"]
+        )
+    except Exception as e:
+        log.exception("history chart render failed")
+        await chat.send_message(f"Chart render failed: {e}")
+        return
+
+    latest = points[-1][1]
+    total = sum(v for _, v in points)
+    await chat.send_photo(
+        photo=png,
+        caption=(f"<b>{info['label']}</b> — last {days}d, {len(points)} cycle(s)\n"
+                 f"latest: <code>{latest:g}</code> • sum: <code>{total:g}</code>"),
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    days = 7
+    if args:
+        parsed = _parse_int_arg(args[0], lo=1, hi=HISTORY_GRAPH_MAX_DAYS)
+        if parsed is None:
+            await update.effective_chat.send_message(
+                f"Usage: <code>/stats [days]</code> — 1–{HISTORY_GRAPH_MAX_DAYS}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        days = parsed
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    records = await asyncio.to_thread(reports.load_reports, since, None)
+    if not records:
+        await update.effective_chat.send_message(
+            f"No archived cycles in the last {days}d.")
+        return
+
+    s = reports.aggregate_stats(records)
+    cpu_str = f"{s['cpu_avg_mean']:.1f}%" if s.get("cpu_avg_mean") is not None else "n/a"
+    ram_str = f"{s['ram_avg_mean']:.1f}%" if s.get("ram_avg_mean") is not None else "n/a"
+    top_cats = "\n".join(
+        f"  <code>{html_escape(cat)}</code> ×{count}"
+        for cat, count in (s.get("top_finding_categories") or [])
+    ) or "  (none)"
+
+    text = (
+        f"<b>Stats — last {days}d ({s['records']} cycles)</b>\n\n"
+        f"📊 findings: total <b>{s['findings_total']}</b>, "
+        f"critical <b>{s['findings_critical']}</b>, warning <b>{s['findings_warning']}</b>\n"
+        f"🔐 SSH: <b>{s['port_probes_total']}</b> probes, "
+        f"<b>{s['failed_auth_total']}</b> failed auth\n"
+        f"🛡 fail2ban bans (24h sum): <b>{s['fail2ban_bans_total']}</b>\n"
+        f"🖥 CPU avg: <b>{cpu_str}</b> • RAM avg: <b>{ram_str}</b>\n"
+        f"📤 digests sent: <b>{s['digest_sent_count']}/{s['records']}</b> "
+        f"({s['digest_sent_pct']}%)\n\n"
+        f"<b>Top finding categories:</b>\n{top_cats}"
+    )
+    await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_report(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Replay a past digest in the caller's chat by ISO date or timestamp prefix."""
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        await update.effective_chat.send_message(
+            "Usage: <code>/report &lt;YYYY-MM-DD&gt;</code> "
+            "or <code>/report &lt;YYYY-MM-DDTHH&gt;</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    prefix = args[0].strip()
+    record = await asyncio.to_thread(reports.find_report_by_prefix, prefix)
+    if record is None:
+        await update.effective_chat.send_message(
+            f"No report found with prefix <code>{html_escape(prefix)}</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    digest_html = (record.get("digest") or {}).get("html") or "(no digest text recorded)"
+    ts = record.get("timestamp", "?")
+    header = f"<b>Replay — {html_escape(ts)}</b>"
+    body = digest_html
+    # Telegram limit handling: if too long, split into two messages
+    if len(body) <= CHUNK_LIMIT - len(header) - 2:
+        await update.effective_chat.send_message(
+            f"{header}\n{body}", parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.effective_chat.send_message(header, parse_mode=ParseMode.HTML)
+        for i in range(0, len(body), CHUNK_LIMIT):
+            await update.effective_chat.send_message(
+                body[i:i + CHUNK_LIMIT], parse_mode=ParseMode.HTML,
+            )
+
+
+async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Upload the last N reports as a JSON file. Default 30, max EXPORT_MAX."""
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    n = 30
+    if args:
+        parsed = _parse_int_arg(args[0], lo=1, hi=EXPORT_MAX)
+        if parsed is None:
+            await update.effective_chat.send_message(
+                f"Usage: <code>/export [N]</code> — 1–{EXPORT_MAX}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        n = parsed
+
+    records = await asyncio.to_thread(reports.load_reports, None, n)
+    if not records:
+        await update.effective_chat.send_message("No reports to export yet.")
+        return
+
+    payload = json.dumps(records, indent=2, default=str).encode("utf-8")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    buf = BytesIO(payload)
+    buf.name = f"network-agent-history-{len(records)}-{today}.json"
+    try:
+        await update.effective_chat.send_document(
+            document=buf,
+            caption=(f"<b>{len(records)} report(s)</b> — "
+                     f"{records[0].get('timestamp', '?')[:10]} → "
+                     f"{records[-1].get('timestamp', '?')[:10]}"),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        log.exception("export send_document failed")
+        await update.effective_chat.send_message(
+            f"Couldn't upload export: {html_escape(str(e))}",
             parse_mode=ParseMode.HTML,
         )
 
@@ -771,6 +1042,10 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("trend", cmd_trend))
     app.add_handler(CommandHandler("chart", cmd_chart))
     app.add_handler(CommandHandler("logs", cmd_logs))
+    app.add_handler(CommandHandler("history", cmd_history))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("report", cmd_report))
+    app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CommandHandler("mute_all", cmd_mute_all))
     app.add_handler(CommandHandler("unmute_all", cmd_unmute_all))
     app.add_handler(CommandHandler("mute", cmd_mute))

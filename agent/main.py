@@ -1,13 +1,15 @@
 import asyncio
 import logging
 import os
+import time
+from datetime import datetime, timezone
 
+from acks import active_acks, snoozed_fingerprints
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from acks import snoozed_fingerprints
-from config import REPORT_HOUR, REPORT_INTERVAL_HOURS, RESET_BASELINE
+from config import OPENROUTER_MODEL, REPORT_HOUR, REPORT_INTERVAL_HOURS, RESET_BASELINE
 from fail2ban import get_status as get_fail2ban_status
 from findings import enumerate_findings, filter_unsnoozed, strip_snoozed_from_data
 from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
@@ -15,12 +17,16 @@ from logs import get_auth_log_summary
 from notifications import (
     alarm_poller_loop,
     is_muted,
+    mute_status,
     send_to_critical,
     should_send_digest,
 )
+from overrides import effective, effective_int
+import reports
 from security_news import fetch_security_news
 from security_scan import run_scan
 from system_health import run_health_check
+from tool_mute import active_mutes
 from tool_mute import decrement_counts as decrement_tool_mutes
 from tool_mute import is_muted as is_source_muted
 from trends import (
@@ -53,6 +59,8 @@ def run_agent(target_chat_id: int | str | None = None,
     preview: don't persist snapshots/decrement mutes — read-only run.
     """
     log.info("Starting report collection (force=%s preview=%s)", force, preview)
+    cycle_start = time.monotonic()
+    cycle_timestamp = datetime.now(timezone.utc).isoformat()
 
     if is_source_muted("metrics"):
         metrics_summary = {"_muted": True}
@@ -114,7 +122,61 @@ def run_agent(target_chat_id: int | str | None = None,
 
     if not preview:
         _route_critical_findings(active_findings)
+        _archive_report(
+            timestamp=cycle_timestamp,
+            trigger="runnow" if force else "scheduled",
+            cycle_duration_ms=int((time.monotonic() - cycle_start) * 1000),
+            decision={
+                "digest_sent": allow_digest,
+                "suppression_reason": None if allow_digest else reason,
+                "forced": force,
+                "tool_mutes_active": active_mutes(),
+                "global_mute": mute_status() or None,
+            },
+            digest_parts=parts,
+            findings=active_findings,
+            metrics=metrics_summary,
+            trends=trends,
+            security=sec_filtered,
+            system_health=health_filtered,
+            auth=logs,
+            fail2ban=fail2ban_status,
+            news=news,
+            active_alarms=metrics_summary.get("active_alarms") if isinstance(metrics_summary, dict) else None,
+            active_acks=active_acks(),
+        )
         decrement_tool_mutes()
+
+
+def _archive_report(**kwargs) -> None:
+    """Build and persist a per-cycle report record. Never raises — a
+    history-write failure must not break a digest cycle."""
+    try:
+        digest_html = "\n\n".join(p for p in (kwargs.get("digest_parts") or []) if p)
+        record = reports.build_record(
+            timestamp=kwargs["timestamp"],
+            trigger=kwargs["trigger"],
+            model=effective("OPENROUTER_MODEL", OPENROUTER_MODEL) or OPENROUTER_MODEL,
+            cycle_duration_ms=kwargs["cycle_duration_ms"],
+            decision=kwargs["decision"],
+            digest_html=digest_html,
+            digest_parts=kwargs.get("digest_parts"),
+            findings=kwargs.get("findings"),
+            metrics=kwargs.get("metrics"),
+            trends=kwargs.get("trends"),
+            security=kwargs.get("security"),
+            system_health=kwargs.get("system_health"),
+            auth=kwargs.get("auth"),
+            fail2ban=kwargs.get("fail2ban"),
+            news=kwargs.get("news"),
+            active_alarms=kwargs.get("active_alarms"),
+            active_acks=kwargs.get("active_acks"),
+        )
+        reports.save_report(record)
+        keep_days = effective_int("REPORTS_RETENTION_DAYS", default=reports.DEFAULT_RETENTION_DAYS)
+        reports.prune_old(keep_days=keep_days)
+    except Exception as e:
+        log.warning("report archive failed: %s", e)
 
 
 def _send_digest_charts(snapshots: list[dict], health: dict,

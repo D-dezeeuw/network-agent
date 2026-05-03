@@ -82,3 +82,36 @@ def test_disk_color_thresholds():
     assert charts._disk_color(95) == "#ff6b6b"
     assert charts._disk_color(80) == "#f5d77a"
     assert charts._disk_color(50) == "#7ed957"
+
+
+# --- render_history_chart -----------------------------------------------------
+
+def test_history_chart_with_short_window():
+    from datetime import datetime, timedelta, timezone
+    base = datetime(2026, 5, 3, 8, tzinfo=timezone.utc)
+    points = [(base + timedelta(hours=i), float(i * 2)) for i in range(6)]
+    out = charts.render_history_chart(points, title="probes 1d", ylabel="count")
+    assert _is_png(out)
+
+
+def test_history_chart_with_long_window():
+    from datetime import datetime, timedelta, timezone
+    base = datetime(2026, 4, 3, 8, tzinfo=timezone.utc)
+    points = [(base + timedelta(days=i), float(i)) for i in range(30)]
+    out = charts.render_history_chart(points, title="bans 30d", ylabel="bans")
+    assert _is_png(out)
+
+
+def test_history_chart_handles_empty_points():
+    out = charts.render_history_chart([], title="empty", ylabel="x")
+    assert _is_png(out)
+
+
+def test_history_chart_handles_two_points():
+    """Edge: minimum-data graph still renders (`/history` only triggers
+    graph mode when ≥2 points exist, but be defensive)."""
+    from datetime import datetime, timezone
+    points = [(datetime(2026, 5, 1, 8, tzinfo=timezone.utc), 1.0),
+              (datetime(2026, 5, 2, 8, tzinfo=timezone.utc), 5.0)]
+    out = charts.render_history_chart(points, title="two", ylabel="y")
+    assert _is_png(out)
