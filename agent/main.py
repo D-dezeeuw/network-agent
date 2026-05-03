@@ -14,6 +14,15 @@ from logs import get_auth_log_summary
 from security_news import fetch_security_news
 from security_scan import run_scan
 from system_health import run_health_check
+from trends import (
+    all_disk_forecasts,
+    compute_deltas,
+    extract_snapshot,
+    load_recent,
+    previous_snapshot,
+    prune_snapshots,
+    save_snapshot,
+)
 from ai import generate_report
 from tg_publish import send_message_with_buttons, send_messages
 
@@ -44,7 +53,17 @@ def run_agent() -> None:
     active_findings = filter_unsnoozed(enumerate_findings(security, health), snoozed)
     log.info("findings: %d active, %d snoozed", len(active_findings), len(snoozed))
 
-    parts = generate_report(metrics_summary, logs, news, sec_filtered, health_filtered)
+    # Trends: compute deltas vs an earlier snapshot, then save current + prune.
+    current_snap = extract_snapshot(metrics_summary, health)
+    history = load_recent()
+    deltas = compute_deltas(current_snap, previous_snapshot(history + [current_snap]))
+    forecasts = all_disk_forecasts(history + [current_snap])
+    trends = {"deltas": deltas, "disk_forecasts": forecasts} if (deltas or forecasts) else {}
+    log.info("trends: %d deltas, %d forecasts", len(deltas), len(forecasts))
+    save_snapshot(current_snap)
+    prune_snapshots()
+
+    parts = generate_report(metrics_summary, logs, news, sec_filtered, health_filtered, trends)
     success = send_messages(parts)
     log.info("Report sent: %d parts, ok=%s", len(parts), success)
 

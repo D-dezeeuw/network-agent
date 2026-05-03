@@ -21,6 +21,7 @@ from telegram.ext import (
 from acks import active_acks, add_ack, remove_ack
 from ai import answer_question
 from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from trends import load_recent, metric_series, render_sparkline
 
 log = logging.getLogger("bot")
 
@@ -47,6 +48,7 @@ HELP_TEXT = (
     "<b>/security</b> — security scan delta\n"
     "<b>/updates</b> — pending package updates\n"
     "<b>/news</b> — relevant security news\n"
+    "<b>/trend &lt;metric&gt;</b> — sparkline + delta for a metric\n"
     "<b>/acks</b> — list active snoozes\n"
     "<b>/unsnooze &lt;id&gt;</b> — remove a snooze by fingerprint\n"
     "<b>/help</b> — this menu\n\n"
@@ -60,11 +62,25 @@ BOT_COMMAND_MENU = [
     BotCommand("security", "Security scan delta"),
     BotCommand("updates", "Pending package updates"),
     BotCommand("news", "Relevant security news"),
+    BotCommand("trend", "Sparkline + delta for a metric"),
     BotCommand("acks", "List active snoozes"),
     BotCommand("unsnooze", "Remove a snooze (takes id arg)"),
     BotCommand("runnow", "Trigger full digest now"),
     BotCommand("help", "Show this command list"),
 ]
+
+
+# /trend metric → snapshot key mapping. Disk metrics pass through as-is
+# (e.g. "disk:/var/lib/docker") since they're stored under that exact key.
+TREND_METRIC_KEYS = {
+    "cpu": "cpu_avg",
+    "ram": "ram_avg",
+    "network": "network_avg",
+    "pending": "pending_total",
+    "security_pending": "pending_security",
+    "concerning": "concerning_count",
+    "high_restart": "high_restart_count",
+}
 
 
 def _resolve_digest_chat_id() -> int | None:
@@ -175,6 +191,54 @@ async def cmd_unsnooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.effective_chat.send_message(f"No active snooze for <code>{fp}</code>.",
                                                  parse_mode=ParseMode.HTML)
+
+
+async def cmd_trend(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        available = ", ".join(sorted(TREND_METRIC_KEYS.keys()))
+        await update.effective_chat.send_message(
+            "Usage: <code>/trend &lt;metric&gt;</code>\n"
+            f"Built-in: <code>{available}</code>\n"
+            "Disks: <code>/trend disk:/</code>, <code>/trend disk:/var/lib/docker</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    metric = args[0].strip()
+    snap_key = TREND_METRIC_KEYS.get(metric, metric)
+
+    snapshots = load_recent()
+    if not snapshots:
+        await update.effective_chat.send_message("No snapshots yet — wait for the first digest to land.")
+        return
+
+    series = metric_series(snapshots, snap_key)
+    if not series:
+        await update.effective_chat.send_message(
+            f"No data for <code>{metric}</code>. Snapshot key: <code>{snap_key}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    spark = render_sparkline(series)
+    latest = series[-1]
+    earliest = series[0]
+    delta = latest - earliest
+    direction = "↑" if delta > 0 else "↓" if delta < 0 else "→"
+    pct = (delta / earliest * 100) if earliest else None
+    pct_str = f"{pct:+.1f}%" if pct is not None else f"{delta:+.2f}"
+
+    text = (
+        f"<b>{metric}</b> over last {len(series)} snapshot(s)\n"
+        f"<code>{spark}</code>\n"
+        f"Range: {min(series):.2f} – {max(series):.2f}\n"
+        f"Latest: {latest:.2f} ({direction} {pct_str} since first)"
+    )
+    await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML)
 
 
 _SNOOZE_DURATIONS = {"s24": ("24h", 24), "s7d": ("7 days", 24 * 7)}
@@ -298,6 +362,7 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("runnow", cmd_runnow))
     app.add_handler(CommandHandler("acks", cmd_acks))
     app.add_handler(CommandHandler("unsnooze", cmd_unsnooze))
+    app.add_handler(CommandHandler("trend", cmd_trend))
     for cmd, query in COMMAND_QUERIES.items():
         app.add_handler(CommandHandler(cmd, _make_query_handler(query)))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ack:"))

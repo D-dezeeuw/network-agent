@@ -52,14 +52,14 @@ Six-phase rollout to evolve the network-agent's Telegram UX from a single-messag
 **Goal:** add temporal context — comparisons vs yesterday and rate-of-change forecasts.
 **Branch:** `feat/phase-3-trends`
 
-- [ ] Snapshot persistence: write each digest's metrics + health to `/state/snapshots/<ISO>.json`
-- [ ] Rotation: keep last 30 daily snapshots, prune older
-- [ ] New module `agent/trends.py`: deltas vs yesterday for CPU/RAM avg, disk usage per mount, restart counts, pending-update count, listening-port count
-- [ ] Trend annotations in digest prompt ("+12% vs yesterday", "↑ 3 new updates")
-- [ ] Linear-regression forecast for disk usage: "at current trend, /var/lib/docker fills in ~N days"
-- [ ] `/trend <metric>` command: ASCII sparkline + delta for one metric
-- [ ] Q&A "show its work" footer — list which tools were called
-- [ ] Tests: delta math, snapshot rotation, sparkline output
+- [x] Snapshot persistence: write each digest's metrics + health to `/state/snapshots/<ISO>.json`
+- [x] Rotation: keep last 30 daily snapshots, prune older
+- [x] New module `agent/trends.py`: deltas vs yesterday for CPU/RAM avg, disk usage per mount, restart counts, pending-update count, listening-port count
+- [x] Trend annotations in digest prompt ("+12% vs yesterday", "↑ 3 new updates")
+- [x] Linear-regression forecast for disk usage: "at current trend, /var/lib/docker fills in ~N days"
+- [x] `/trend <metric>` command: ASCII sparkline + delta for one metric
+- [x] Q&A "show its work" footer — list which tools were called
+- [x] Tests: delta math, snapshot rotation, sparkline output
 
 **Acceptance:** the digest annotates ≥3 metrics with vs-yesterday deltas; `/trend cpu` returns a sparkline and a direction call-out.
 

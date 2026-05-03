@@ -42,8 +42,10 @@ def split_report(report: str) -> list[str]:
     return parts or [report.strip()]
 
 
-def generate_report(metrics: dict, logs: dict, news: list, security: dict, health: dict) -> list[str]:
+def generate_report(metrics: dict, logs: dict, news: list, security: dict,
+                    health: dict, trends: dict | None = None) -> list[str]:
     """Generate the daily digest as an ordered list of section messages."""
+    trends_block = trends or {"deltas": {}, "disk_forecasts": {}}
     prompt = f"""\
 You are an ops monitoring agent for a Linux server (Debian Bookworm).
 Analyze the data below and produce a digest in EXACTLY four sections,
@@ -71,6 +73,13 @@ CPU/RAM/disk usage in plain language, then any relevant CVE news entries.
 Cross-reference: if a pending security update package matches a CVE in
 the news, call that out explicitly.
 
+Trend annotations:
+- If `trends.deltas` is non-empty, weave at least 3 of the deltas into
+  the relevant section (e.g. "CPU avg 23.5% (+12% vs prev)"). Treat
+  positive deltas in `pending_security` or `concerning_count` as alerts.
+- If `trends.disk_forecasts` has entries with low `days_until_full`
+  (under ~30), call them out under METRICS as a capacity warning.
+
 Formatting rules:
 - Use Telegram HTML only: <b>, <i>, <code>, <pre>. NO Markdown asterisks.
 - Escape literal &lt;, &gt;, &amp; in any non-tag output.
@@ -96,6 +105,9 @@ Escalation rules:
 
 ## Server Metrics (last 24h)
 {metrics}
+
+## Trends (vs prior snapshot)
+{trends_block}
 
 ## Auth Log Summary (last 24h)
 {logs}
@@ -133,12 +145,20 @@ a tool returns an error, surface it briefly.
 """
 
 
+def _format_tool_footer(tools_used: list[str]) -> str:
+    if not tools_used:
+        return ""
+    unique = sorted(set(tools_used))
+    return f"\n\n<i>used: {', '.join(unique)}</i>"
+
+
 def answer_question(user_message: str) -> str:
     """Run a tool-call loop to answer a user question with live server data."""
     messages = [
         {"role": "system", "content": _QA_SYSTEM_PROMPT},
         {"role": "user", "content": user_message},
     ]
+    tools_used: list[str] = []
 
     for _ in range(MAX_TOOL_ITERATIONS):
         try:
@@ -156,7 +176,7 @@ def answer_question(user_message: str) -> str:
         tool_calls = msg.tool_calls or []
 
         if not tool_calls:
-            return msg.content or "(no answer)"
+            return (msg.content or "(no answer)") + _format_tool_footer(tools_used)
 
         messages.append({
             "role": "assistant",
@@ -175,6 +195,7 @@ def answer_question(user_message: str) -> str:
         })
 
         for tc in tool_calls:
+            tools_used.append(tc.function.name)
             try:
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
@@ -186,4 +207,5 @@ def answer_question(user_message: str) -> str:
                 "content": json.dumps(result, default=str),
             })
 
-    return "🤔 I gathered a lot of data but couldn't converge on an answer. Try a more specific question."
+    return ("🤔 I gathered a lot of data but couldn't converge on an answer. "
+            "Try a more specific question.") + _format_tool_footer(tools_used)
