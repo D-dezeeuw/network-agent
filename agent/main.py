@@ -8,6 +8,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from acks import snoozed_fingerprints
 from config import REPORT_HOUR, REPORT_INTERVAL_HOURS, RESET_BASELINE
+from fail2ban import get_status as get_fail2ban_status
 from findings import enumerate_findings, filter_unsnoozed, strip_snoozed_from_data
 from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
 from logs import get_auth_log_summary
@@ -63,7 +64,9 @@ def run_agent(target_chat_id: int | str | None = None,
                 metrics_summary[name] = summarize_chart(data)
         metrics_summary["active_alarms"] = [] if is_source_muted("scan") else fetch_active_alarms()
 
-    logs = {"_muted": True} if is_source_muted("auth") else get_auth_log_summary(hours=24)
+    auth_muted = is_source_muted("auth")
+    logs = {"_muted": True} if auth_muted else get_auth_log_summary(hours=24)
+    fail2ban_status = {"_muted": True} if auth_muted else get_fail2ban_status()
     news = [] if is_source_muted("news") else fetch_security_news()
     security = {"_muted": True} if is_source_muted("security_scan") else run_scan(reset=RESET_BASELINE)
     health = {"_muted": True} if is_source_muted("system_health") else run_health_check()
@@ -91,7 +94,8 @@ def run_agent(target_chat_id: int | str | None = None,
         save_snapshot(current_snap)
         prune_snapshots()
 
-    parts = generate_report(metrics_summary, logs, news, sec_filtered, health_filtered, trends)
+    parts = generate_report(metrics_summary, logs, news, sec_filtered, health_filtered,
+                            trends, fail2ban_status)
 
     if force:
         allow_digest, reason = True, "forced"

@@ -49,9 +49,11 @@ def split_report(report: str) -> list[str]:
 
 
 def generate_report(metrics: dict, logs: dict, news: list, security: dict,
-                    health: dict, trends: dict | None = None) -> list[str]:
+                    health: dict, trends: dict | None = None,
+                    fail2ban: dict | None = None) -> list[str]:
     """Generate the daily digest as an ordered list of section messages."""
     trends_block = trends or {"deltas": {}, "disk_forecasts": {}}
+    fail2ban_block = fail2ban or {"enabled": False}
     prompt = f"""\
 You are an ops monitoring agent for a Linux server (Debian Bookworm).
 Analyze the data below and produce a digest in EXACTLY four sections,
@@ -66,9 +68,10 @@ A short overall verdict using one of: <b>✅ Healthy</b>, <b>⚠️ Warning</b>,
 
 ##SECURITY##
 Security scan findings — authorized_keys / cron / systemd / ld_so_preload
-deltas, suspicious processes, new listening ports. If
-<code>baseline_established=true</code> or there are no deltas, give a single
-short reassurance line.
+deltas, suspicious processes, new listening ports. Then intrusion-attempt
+signals from auth logs and fail2ban (see rules below). If
+<code>baseline_established=true</code> or there are no deltas AND probe/ban
+counts are quiet, give a single short reassurance line.
 
 ##HEALTH##
 System health: reboot_required, pending updates (highlight security
@@ -86,6 +89,17 @@ Trend annotations:
 - If `trends.disk_forecasts` has entries with low `days_until_full`
   (under ~30), call them out under METRICS as a capacity warning.
 
+Auth-log / fail2ban annotations (under SECURITY):
+- If `port_probes` &gt; 0, mention it as a "scanned N times" line with the top
+  probe IPs. Probes alone are noise on the public internet — don't escalate
+  to Critical unless they pair with new listening ports or suspicious
+  processes. Mention but don't alarm.
+- If `failed_attempts` is high (&gt;100/24h) or coming from a small set of
+  IPs, call out brute-force activity.
+- If `fail2ban.enabled=true` and `bans_24h` &gt; 0, summarize it ("fail2ban
+  blocked N IPs in 24h, top jail: X"). If `enabled=false`, skip silently —
+  fail2ban not being installed is not a finding.
+
 Formatting rules:
 - Use Telegram HTML only: <b>, <i>, <code>, <pre>. NO Markdown asterisks.
 - Escape literal &lt;, &gt;, &amp; in any non-tag output.
@@ -96,11 +110,13 @@ Escalation rules:
   populated/changed, suspicious processes, new listening ports.
 - HIGH PRIORITY (Warning): reboot_required true, security updates &gt; 0,
   Docker `concerning` (unhealthy/dead/restarting/exit&gt;0), `high_restart`,
-  `stale_images_90d`, kernel messages with hard-failure signals.
+  `stale_images_90d`, kernel messages with hard-failure signals,
+  brute-force bursts where a single IP has &gt;20 failed attempts.
 - DO NOT flag: clean-exited containers (in `all_containers` only),
-  warning-level disk states. Disk capacity goes in METRICS as info only —
-  escalate disks only on actual failure (drive offline, FS error in kmsg,
-  read-only remount).
+  warning-level disk states, port probes alone, fail2ban bans alone
+  (the system is doing its job). Disk capacity goes in METRICS as info
+  only — escalate disks only on actual failure (drive offline, FS error
+  in kmsg, read-only remount).
 - If <code>baseline_established=true</code> the security section is informational only.
 
 ## Host Security Scan (delta vs baseline)
@@ -117,6 +133,9 @@ Escalation rules:
 
 ## Auth Log Summary (last 24h)
 {logs}
+
+## Fail2ban Status
+{fail2ban_block}
 
 ## Relevant Security News
 {news}
