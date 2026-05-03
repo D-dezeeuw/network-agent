@@ -87,12 +87,12 @@ Six-phase rollout to evolve the network-agent's Telegram UX from a single-messag
 **Goal:** less noise, faster reaction to actual problems.
 **Branch:** `feat/phase-5-notifications`
 
-- [ ] `TELEGRAM_CRITICAL_CHAT_ID` env var: critical findings route here separately from the routine digest channel
-- [ ] `QUIET_HOURS` env var (e.g. `22-7`): suppress non-critical digests during the window
-- [ ] Real-time alarm poller: every 60s fetch active Netdata alarms, emit to critical chat on new firings
-- [ ] Throttle dedup: same alarm fingerprint sent at most once per 30 minutes
-- [ ] `/mute_all <duration>` and `/unmute_all` for emergency silence
-- [ ] Tests: time-window logic, alarm dedup, severity routing
+- [x] `TELEGRAM_CRITICAL_CHAT_ID` env var: critical findings route here separately from the routine digest channel
+- [x] `QUIET_HOURS` env var (e.g. `22-7`): suppress non-critical digests during the window
+- [x] Real-time alarm poller: every 60s fetch active Netdata alarms, emit to critical chat on new firings
+- [x] Throttle dedup: same alarm fingerprint sent at most once per 30 minutes
+- [x] `/mute_all <duration>` and `/unmute_all` for emergency silence
+- [x] Tests: time-window logic, alarm dedup, severity routing
 
 **Acceptance:** a fresh CRITICAL Netdata alarm shows up within ~60s in the critical chat; routine alarms remain digest-only.
 

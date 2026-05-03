@@ -22,6 +22,7 @@ from acks import active_acks, add_ack, remove_ack
 from ai import answer_question
 from charts import render_sparkline as render_sparkline_png
 from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from notifications import clear_mute, mute_for, mute_status
 from trends import load_recent, metric_series, render_sparkline
 
 log = logging.getLogger("bot")
@@ -53,6 +54,8 @@ HELP_TEXT = (
     "<b>/chart &lt;metric&gt;</b> — render a chart image for a metric\n"
     "<b>/acks</b> — list active snoozes\n"
     "<b>/unsnooze &lt;id&gt;</b> — remove a snooze by fingerprint\n"
+    "<b>/mute_all &lt;hours&gt;</b> — silence all output (incl. criticals)\n"
+    "<b>/unmute_all</b> — cancel an active mute\n"
     "<b>/help</b> — this menu\n\n"
     "Or just ask a question in plain English."
 )
@@ -68,6 +71,8 @@ BOT_COMMAND_MENU = [
     BotCommand("chart", "Render a chart image for a metric"),
     BotCommand("acks", "List active snoozes"),
     BotCommand("unsnooze", "Remove a snooze (takes id arg)"),
+    BotCommand("mute_all", "Silence all output for N hours"),
+    BotCommand("unmute_all", "Cancel an active mute"),
     BotCommand("runnow", "Trigger full digest now"),
     BotCommand("help", "Show this command list"),
 ]
@@ -292,6 +297,57 @@ async def cmd_chart(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_chat.send_message(f"Couldn't send chart: {e}")
 
 
+async def cmd_mute_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        await update.effective_chat.send_message(
+            "Usage: <code>/mute_all &lt;hours&gt;</code>\n"
+            "Suppresses ALL agent output (digest + criticals + alarm poller) "
+            "until the duration expires.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    raw = args[0].strip().lower().rstrip("h")
+    try:
+        hours = float(raw)
+    except ValueError:
+        await update.effective_chat.send_message(
+            f"Couldn't parse <code>{args[0]}</code> as hours.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    if hours <= 0 or hours > 24 * 30:
+        await update.effective_chat.send_message(
+            "Pick a duration between 0 and 720 hours (30 days).")
+        return
+    record = mute_for(hours)
+    await update.effective_chat.send_message(
+        f"🔕 Muted for {hours}h. Expires at <code>{record['expires_at']}</code>.\n"
+        "Use <code>/unmute_all</code> to cancel early.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_unmute_all(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    status = mute_status()
+    cleared = clear_mute()
+    if cleared and status:
+        await update.effective_chat.send_message(
+            f"🔔 Mute cancelled (was set to expire at <code>{status.get('expires_at')}</code>).",
+            parse_mode=ParseMode.HTML,
+        )
+    elif cleared:
+        await update.effective_chat.send_message("🔔 Stale mute file cleared.")
+    else:
+        await update.effective_chat.send_message("Nothing to unmute — agent isn't muted.")
+
+
 _SNOOZE_DURATIONS = {"s24": ("24h", 24), "s7d": ("7 days", 24 * 7)}
 
 
@@ -415,6 +471,8 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("unsnooze", cmd_unsnooze))
     app.add_handler(CommandHandler("trend", cmd_trend))
     app.add_handler(CommandHandler("chart", cmd_chart))
+    app.add_handler(CommandHandler("mute_all", cmd_mute_all))
+    app.add_handler(CommandHandler("unmute_all", cmd_unmute_all))
     for cmd, query in COMMAND_QUERIES.items():
         app.add_handler(CommandHandler(cmd, _make_query_handler(query)))
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^ack:"))
