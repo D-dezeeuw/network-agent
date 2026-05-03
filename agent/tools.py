@@ -7,6 +7,7 @@ during the tool-call loop.
 
 from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
 from docker_logs import get_container_logs
+from fail2ban import get_status as get_fail2ban_status
 from logs import get_auth_log_summary
 from security_news import fetch_security_news
 from security_scan import run_scan
@@ -76,6 +77,10 @@ def _get_container_logs(name: str, tail: int = 100, since_minutes: int | None = 
     return get_container_logs(name=name, tail=tail, since_minutes=since_minutes)
 
 
+def _get_fail2ban_status() -> dict:
+    return get_fail2ban_status()
+
+
 TOOLS_SCHEMA = [
     {
         "type": "function",
@@ -102,7 +107,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "get_auth_log",
-            "description": "Return SSH auth log summary: failed login count, successful logins, top attacker IPs, sample of recent failures. Use for questions about login attempts, brute force, who logged in.",
+            "description": "Return SSH auth log summary: failed login count, successful logins, port-probe count (pre-auth connection lines that didn't even attempt credentials — the strongest 'we're being scanned' signal), top attacker IPs (failed-auth), top probe IPs (scan-only), and sample lines for each. Use for questions about login attempts, brute force, port scanning, who logged in.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -197,6 +202,14 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_fail2ban_status",
+            "description": "Return fail2ban summary read from its SQLite DB: bans in the last 24h and 7d, top banned IPs, top jails, recent ban sample. Returns `enabled: false` if fail2ban isn't installed on the host. Use for questions about IP bans, brute-force mitigation, who got blocked recently.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
@@ -213,6 +226,7 @@ TOOL_IMPLS = {
     "get_journal_errors": _get_journal_errors,
     "get_kernel_messages": _get_kernel_messages,
     "get_container_logs": _get_container_logs,
+    "get_fail2ban_status": _get_fail2ban_status,
 }
 
 

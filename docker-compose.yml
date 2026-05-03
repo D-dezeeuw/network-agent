@@ -31,6 +31,7 @@ services:
       - /run:/host/run:ro
       - /var/lib/apt:/host/var/lib/apt:ro
       - /var/lib/dpkg:/host/var/lib/dpkg:ro
+      - /var/lib/fail2ban:/host/var/lib/fail2ban:ro
       - /var/cache/apt:/host/var/cache/apt:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - network-agent-state:/state
