@@ -91,6 +91,25 @@ def _parse_iso(ts: str) -> datetime | None:
         return None
 
 
+def _is_concerning_container(state: dict, health: str | None) -> bool:
+    """A container is 'concerning' if it's actively failing — not just stopped.
+
+    Concerning: unhealthy health check, dead, restart-looping, or exited
+    with a non-zero exit code (i.e. crashed).
+
+    NOT concerning: clean exited containers (exit 0, common for one-shot
+    Docker tasks), paused, created-but-not-yet-started.
+    """
+    if health == "unhealthy":
+        return True
+    status = state.get("Status")
+    if status in ("dead", "restarting"):
+        return True
+    if status == "exited" and state.get("ExitCode", 0) != 0:
+        return True
+    return False
+
+
 def check_docker_containers() -> dict:
     try:
         import docker as dockerlib
@@ -105,33 +124,44 @@ def check_docker_containers() -> dict:
         try:
             attrs = c.attrs
             state = attrs.get("State", {})
+            health = state.get("Health", {}).get("Status")
             created_dt = _parse_iso(c.image.attrs.get("Created", ""))
             age_days = (now - created_dt).days if created_dt else None
             results.append({
                 "name": c.name,
                 "status": c.status,
+                "exit_code": state.get("ExitCode"),
                 "restart_count": attrs.get("RestartCount", 0),
                 "image": (c.image.tags or [c.image.id[:19]])[0],
                 "image_age_days": age_days,
-                "health": state.get("Health", {}).get("Status"),
+                "health": health,
+                "_concerning": _is_concerning_container(state, health),
             })
         except Exception:
             continue
 
-    unhealthy = [r for r in results if r["status"] != "running" or r["health"] == "unhealthy"]
-    high_restart = [r for r in results if r["restart_count"] > 3]
+    concerning = [
+        {k: v for k, v in r.items() if not k.startswith("_")}
+        for r in results if r["_concerning"]
+    ]
+    high_restart = [
+        {k: v for k, v in r.items() if not k.startswith("_")}
+        for r in results if r["restart_count"] > 3
+    ]
     stale_images = [
         {"name": r["name"], "image": r["image"], "age_days": r["image_age_days"]}
         for r in results
         if r["image_age_days"] is not None and r["image_age_days"] > 90
     ]
+    all_containers = [{k: v for k, v in r.items() if not k.startswith("_")} for r in results]
 
     return {
         "total": len(results),
         "running": sum(1 for r in results if r["status"] == "running"),
-        "unhealthy": unhealthy,
+        "concerning": concerning,
         "high_restart": high_restart,
         "stale_images_90d": stale_images,
+        "all_containers": all_containers,
     }
 
 

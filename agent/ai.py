@@ -40,8 +40,10 @@ Your report should:
 - HIGH PRIORITY (treat as Warning):
     * system health: reboot_required true (kernel update pending)
     * system health: pending_updates.security > 0 (list a few package names)
-    * system health: docker containers in unhealthy / high_restart / stale_images_90d lists
-    * system health: kernel_messages notable count > 0 (OOM, drive errors, etc.)
+    * system health: docker containers in `concerning` (unhealthy health check, dead, restart-looping, or crashed with non-zero exit). DO NOT flag containers in `all_containers` that are merely "exited" with exit code 0 — those are clean one-shot tasks. Also flag `high_restart` and `stale_images_90d` lists.
+    * system health: kernel_messages notable count > 0 with HARD failure signals (drive offline, "I/O error", FS read-only remount, OOM kill). Treat "degraded" or warning-level disk states as informational only — do NOT escalate them.
+
+- DISK POLICY: Disk usage/capacity numbers go in the metrics summary as plain info. Only escalate disks to Warning/Critical on evidence of an actual failure (drive offline, FS error in kernel log, read-only remount). High-usage-but-still-OK or "degraded" SMART status are NOT failures — mention briefly but do not raise the overall status level.
 - If `baseline_established: true`, this is the first scan — confirm baseline is set, do not raise alerts on the security section
 - Summarize CPU, RAM, disk usage in plain language
 - Flag any anomalies or spikes in metrics

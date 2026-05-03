@@ -1,4 +1,4 @@
-from system_health import _filter_notable_kernel, _parse_apt_output
+from system_health import _filter_notable_kernel, _is_concerning_container, _parse_apt_output
 
 
 APT_SAMPLE = """\
@@ -65,3 +65,36 @@ def test_filter_notable_kernel_picks_segfault_and_panic():
 def test_filter_notable_kernel_no_matches():
     lines = ["kernel: routine info message", "kernel: another normal line"]
     assert _filter_notable_kernel(lines) == []
+
+
+def test_concerning_unhealthy_health_check():
+    assert _is_concerning_container({"Status": "running"}, "unhealthy") is True
+
+
+def test_concerning_dead_status():
+    assert _is_concerning_container({"Status": "dead"}, None) is True
+
+
+def test_concerning_restarting():
+    assert _is_concerning_container({"Status": "restarting"}, None) is True
+
+
+def test_concerning_exited_nonzero_is_failure():
+    assert _is_concerning_container({"Status": "exited", "ExitCode": 137}, None) is True
+
+
+def test_clean_exited_is_not_concerning():
+    """Exit code 0 = clean shutdown, e.g. one-shot task completed."""
+    assert _is_concerning_container({"Status": "exited", "ExitCode": 0}, None) is False
+
+
+def test_running_with_starting_health_is_not_concerning():
+    assert _is_concerning_container({"Status": "running"}, "starting") is False
+
+
+def test_running_with_no_healthcheck_is_not_concerning():
+    assert _is_concerning_container({"Status": "running"}, None) is False
+
+
+def test_paused_is_not_concerning():
+    assert _is_concerning_container({"Status": "paused"}, None) is False

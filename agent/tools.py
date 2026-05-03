@@ -134,7 +134,7 @@ TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "get_docker_containers",
-            "description": "Return per-container Docker status: running count, unhealthy containers, high-restart-count containers, images older than 90 days. Use when asked about Docker, containers, or specific container names.",
+            "description": "Return per-container Docker status: running count, `concerning` containers (unhealthy health check, dead, restart-looping, or crashed with non-zero exit code), `high_restart` containers (>3 restarts), `stale_images_90d` (image older than 90 days), and `all_containers` for the full list including clean-exited one-shot tasks. Use when asked about Docker, containers, or specific container names.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
