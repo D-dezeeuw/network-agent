@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
 from docker_logs import get_container_logs
 from fail2ban import get_status as get_fail2ban_status
+from rkhunter import get_status as get_rkhunter_status
 from logs import get_auth_log_summary
 import reports
 from security_news import fetch_security_news
@@ -82,6 +83,10 @@ def _get_container_logs(name: str, tail: int = 100, since_minutes: int | None = 
 
 def _get_fail2ban_status() -> dict:
     return get_fail2ban_status()
+
+
+def _get_rkhunter_status() -> dict:
+    return get_rkhunter_status()
 
 
 def _get_report_history(days: int = 7, limit: int | None = None) -> list[dict]:
@@ -236,6 +241,14 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "get_rkhunter_status",
+            "description": "Return rkhunter (Rootkit Hunter) summary parsed from its combined log file: total warning count, last-modified timestamp, and a tail of the most recent Warning lines. Returns `enabled: false` if the log file isn't present (rkhunter not installed or no scans run yet). Use for questions about rootkit scans, suspicious files, or 'what does rkhunter say'.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_report_history",
             "description": "Return COMPACT summaries (timestamp, verdict, finding/critical counts, ban count, sent y/n) of past digest cycles in the last N days. NOT the full digests — context-cheap. Use for 'what's been happening lately', 'how many criticals last week', 'when did we last have a quiet day' questions.",
             "parameters": {
@@ -291,6 +304,7 @@ TOOL_IMPLS = {
     "get_kernel_messages": _get_kernel_messages,
     "get_container_logs": _get_container_logs,
     "get_fail2ban_status": _get_fail2ban_status,
+    "get_rkhunter_status": _get_rkhunter_status,
     "get_report_history": _get_report_history,
     "get_report_detail": _get_report_detail,
     "get_history_stats": _get_history_stats,

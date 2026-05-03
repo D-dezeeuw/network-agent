@@ -27,6 +27,7 @@ ALIASES = {
     "scan": "security_scan",
     "metrics": "metrics",
     "health": "system_health",
+    "rkhunter": "rkhunter",
 }
 
 

@@ -74,6 +74,12 @@ METRICS: dict[str, dict] = {
         "title": "Pending security updates per cycle",
         "ylabel": "count",
     },
+    "rkhunter": {
+        "path": "rkhunter.total_warnings",
+        "label": "rkhunter warnings (cumulative)",
+        "title": "rkhunter cumulative warning count per cycle",
+        "ylabel": "warnings",
+    },
 }
 
 

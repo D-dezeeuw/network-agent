@@ -50,10 +50,12 @@ def split_report(report: str) -> list[str]:
 
 def generate_report(metrics: dict, logs: dict, news: list, security: dict,
                     health: dict, trends: dict | None = None,
-                    fail2ban: dict | None = None) -> list[str]:
+                    fail2ban: dict | None = None,
+                    rkhunter: dict | None = None) -> list[str]:
     """Generate the daily digest as an ordered list of section messages."""
     trends_block = trends or {"deltas": {}, "disk_forecasts": {}}
     fail2ban_block = fail2ban or {"enabled": False}
+    rkhunter_block = rkhunter or {"enabled": False}
     prompt = f"""\
 You are an ops monitoring agent for a Linux server (Debian Bookworm).
 Analyze the data below and produce a digest in EXACTLY four sections,
@@ -99,6 +101,14 @@ Auth-log / fail2ban annotations (under SECURITY):
 - If `fail2ban.enabled=true` and `bans_24h` &gt; 0, summarize it ("fail2ban
   blocked N IPs in 24h, top jail: X"). If `enabled=false`, skip silently —
   fail2ban not being installed is not a finding.
+- If `rkhunter.enabled=true` and `total_warnings` &gt; 0, mention briefly
+  ("rkhunter: N warnings, last scan TIMESTAMP") and reference the most
+  unusual entry from `recent_warnings` if any stand out (suspicious
+  files, hidden directories, kernel-module changes). rkhunter warnings
+  are often false-positives — do NOT escalate to Critical without other
+  corroborating signal from the host security scan or kernel messages.
+  If `rkhunter.enabled=false`, skip silently — rkhunter not being
+  installed is not a finding.
 
 Formatting rules:
 - Use Telegram HTML only: <b>, <i>, <code>, <pre>. NO Markdown asterisks.
@@ -136,6 +146,9 @@ Escalation rules:
 
 ## Fail2ban Status
 {fail2ban_block}
+
+## rkhunter Status
+{rkhunter_block}
 
 ## Relevant Security News
 {news}
