@@ -20,6 +20,8 @@ from notifications import (
 from security_news import fetch_security_news
 from security_scan import run_scan
 from system_health import run_health_check
+from tool_mute import decrement_counts as decrement_tool_mutes
+from tool_mute import is_muted as is_source_muted
 from trends import (
     all_disk_forecasts,
     compute_deltas,
@@ -41,20 +43,37 @@ logging.basicConfig(
 log = logging.getLogger("agent")
 
 
-def run_agent() -> None:
-    log.info("Starting report collection")
+def run_agent(target_chat_id: int | str | None = None,
+              force: bool = False, preview: bool = False) -> None:
+    """Collect data, build the digest, send to the configured channel.
 
-    raw_metrics = collect_all_metrics()
-    metrics_summary = {}
-    for name, data in raw_metrics.items():
-        if "data" in data:
-            metrics_summary[name] = summarize_chart(data)
-    metrics_summary["active_alarms"] = fetch_active_alarms()
+    target_chat_id: override destination (used by /preview to reply to caller).
+    force: bypass mute/quiet gates (used by /runnow and /preview).
+    preview: don't persist snapshots/decrement mutes — read-only run.
+    """
+    log.info("Starting report collection (force=%s preview=%s)", force, preview)
 
-    logs = get_auth_log_summary(hours=24)
-    news = fetch_security_news()
-    security = run_scan(reset=RESET_BASELINE)
-    health = run_health_check()
+    if is_source_muted("metrics"):
+        metrics_summary = {"_muted": True}
+    else:
+        raw_metrics = collect_all_metrics()
+        metrics_summary = {}
+        for name, data in raw_metrics.items():
+            if "data" in data:
+                metrics_summary[name] = summarize_chart(data)
+        metrics_summary["active_alarms"] = [] if is_source_muted("scan") else fetch_active_alarms()
+
+    logs = {"_muted": True} if is_source_muted("auth") else get_auth_log_summary(hours=24)
+    news = [] if is_source_muted("news") else fetch_security_news()
+    security = {"_muted": True} if is_source_muted("security_scan") else run_scan(reset=RESET_BASELINE)
+    health = {"_muted": True} if is_source_muted("system_health") else run_health_check()
+
+    if is_source_muted("docker") and isinstance(health, dict):
+        health.pop("docker_containers", None)
+    if is_source_muted("updates") and isinstance(health, dict):
+        health.pop("pending_updates", None)
+    if is_source_muted("kernel") and isinstance(health, dict):
+        health.pop("kernel_messages_24h", None)
 
     snoozed = snoozed_fingerprints()
     sec_filtered, health_filtered = strip_snoozed_from_data(security, health, snoozed)
@@ -68,29 +87,34 @@ def run_agent() -> None:
     forecasts = all_disk_forecasts(history + [current_snap])
     trends = {"deltas": deltas, "disk_forecasts": forecasts} if (deltas or forecasts) else {}
     log.info("trends: %d deltas, %d forecasts", len(deltas), len(forecasts))
-    save_snapshot(current_snap)
-    prune_snapshots()
+    if not preview:
+        save_snapshot(current_snap)
+        prune_snapshots()
 
     parts = generate_report(metrics_summary, logs, news, sec_filtered, health_filtered, trends)
 
-    # Snapshots/baselines always update so history stays continuous; the
-    # gates below only suppress *outgoing* messages.
-    allow_digest, reason = should_send_digest()
+    if force:
+        allow_digest, reason = True, "forced"
+    else:
+        allow_digest, reason = should_send_digest()
+
     if allow_digest:
-        success = send_messages(parts)
-        log.info("Report sent: %d parts, ok=%s", len(parts), success)
-        _send_digest_charts(history + [current_snap], health_filtered)
-        _send_finding_buttons(active_findings)
+        success = send_messages(parts, chat_id=target_chat_id)
+        log.info("Report sent: %d parts, ok=%s (target=%s)",
+                 len(parts), success, target_chat_id or "default")
+        _send_digest_charts(history + [current_snap], health_filtered, target_chat_id)
+        if not preview:
+            _send_finding_buttons(active_findings)
     else:
         log.info("Routine digest suppressed (%s); criticals still route", reason)
 
-    # Critical findings always go to the critical chat (when configured),
-    # bypassing quiet hours but respecting mute. send_to_critical() handles
-    # both checks internally.
-    _route_critical_findings(active_findings)
+    if not preview:
+        _route_critical_findings(active_findings)
+        decrement_tool_mutes()
 
 
-def _send_digest_charts(snapshots: list[dict], health: dict) -> None:
+def _send_digest_charts(snapshots: list[dict], health: dict,
+                        target_chat_id: int | str | None = None) -> None:
     """Append visual charts after the text digest.
 
     Sends a status grid (containers + disk usage) always, plus per-metric
@@ -120,7 +144,7 @@ def _send_digest_charts(snapshots: list[dict], health: dict) -> None:
     grid = _render("status_grid",
                    lambda: render_status_grid(containers, disks))
     if grid:
-        send_photo(grid, caption="<b>System status</b>")
+        send_photo(grid, caption="<b>System status</b>", chat_id=target_chat_id)
 
     for metric_key, label in (("cpu_avg", "CPU avg %"), ("ram_avg", "RAM avg %")):
         series = metric_series(snapshots, metric_key)
@@ -128,7 +152,7 @@ def _send_digest_charts(snapshots: list[dict], health: dict) -> None:
             continue
         png = _render(metric_key, lambda s=series, l=label: render_sparkline(s, l))
         if png:
-            send_photo(png)
+            send_photo(png, chat_id=target_chat_id)
 
 
 def _send_finding_buttons(findings) -> None:

@@ -103,14 +103,14 @@ Six-phase rollout to evolve the network-agent's Telegram UX from a single-messag
 **Goal:** tune and operate the agent without SSH.
 **Branch:** `feat/phase-6-config-chat`
 
-- [ ] `/set <KEY> <VALUE>` — write to `/state/overrides.json`, applied on next run
-- [ ] `/unset <KEY>` revert
-- [ ] `/config` — print current effective configuration (env + overrides, with overrides marked)
-- [ ] `/mute <tool>` / `/unmute <tool>` — per-tool disable for the next N digests
-- [ ] `/preview` — dry-run of next digest with current config, sent only to caller
-- [ ] Conversation memory: in 1:1 chat keep last 4 turns for follow-up context
-- [ ] `/clearmemory` to reset the conversation buffer
-- [ ] Tests: override layering precedence, conversation buffer truncation, `/preview` output
+- [x] `/set <KEY> <VALUE>` — write to `/state/overrides.json`, applied on next run
+- [x] `/unset <KEY>` revert
+- [x] `/config` — print current effective configuration (env + overrides, with overrides marked)
+- [x] `/mute <tool>` / `/unmute <tool>` — per-tool disable for the next N digests
+- [x] `/preview` — dry-run of next digest with current config, sent only to caller
+- [x] Conversation memory: in 1:1 chat keep last 4 turns for follow-up context
+- [x] `/clearmemory` to reset the conversation buffer
+- [x] Tests: override layering precedence, conversation buffer truncation, `/preview` output
 
 **Acceptance:** `/set REPORT_HOUR 9` survives a redeploy and the digest fires at the new time; `/mute docker` causes the docker section to be omitted from the next digest.
 
