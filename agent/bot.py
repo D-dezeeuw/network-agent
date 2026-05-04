@@ -23,6 +23,11 @@ from telegram.ext import (
 )
 
 from acks import active_acks, add_ack, remove_ack
+from ignored import (
+    add_ignored,
+    ignored_entries,
+    remove_ignored,
+)
 from ai import answer_question
 from charts import render_history_chart, render_sparkline as render_sparkline_png
 from config import TELEGRAM_AUTHORIZED_USERS, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -72,6 +77,8 @@ HELP_TEXT = (
     "<b>/export [N]</b> — upload last N reports as JSON file\n"
     "<b>/acks</b> — list active snoozes\n"
     "<b>/unsnooze &lt;id&gt;</b> — remove a snooze by fingerprint\n"
+    "<b>/ignored</b> — list permanently-ignored findings\n"
+    "<b>/unignore &lt;id&gt;</b> — stop ignoring a finding by fingerprint\n"
     "<b>/mute_all &lt;hours&gt;</b> — silence all output (incl. criticals)\n"
     "<b>/unmute_all</b> — cancel an active mute\n"
     "<b>/mute &lt;source&gt; [N]</b> — silence one source for N digests\n"
@@ -103,6 +110,8 @@ BOT_COMMAND_MENU = [
     BotCommand("export", "Upload last N reports as JSON"),
     BotCommand("acks", "List active snoozes"),
     BotCommand("unsnooze", "Remove a snooze (takes id arg)"),
+    BotCommand("ignored", "List permanently-ignored findings"),
+    BotCommand("unignore", "Stop ignoring a finding (takes id arg)"),
     BotCommand("mute_all", "Silence all output for N hours"),
     BotCommand("unmute_all", "Cancel an active mute"),
     BotCommand("mute", "Silence one data source"),
@@ -240,6 +249,54 @@ async def cmd_unsnooze(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.effective_chat.send_message(f"No active snooze for <code>{fp}</code>.",
                                                  parse_mode=ParseMode.HTML)
+
+
+async def cmd_ignored(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """List permanently-ignored findings (no expiry, distinct from /acks)."""
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    entries = ignored_entries()
+    if not entries:
+        await update.effective_chat.send_message(
+            "No findings are currently ignored. Tap <b>Ignore</b> on a "
+            "finding to suppress it permanently.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    lines = ["<b>Ignored findings:</b>"]
+    for fp, info in sorted(entries.items(), key=lambda kv: kv[1].get("added_at", "")):
+        label = info.get("label") or "(no label)"
+        added = (info.get("added_at") or "?")[:10]
+        lines.append(f"\n<code>{fp}</code> — added {added}\n  {html_escape(label)}")
+    lines.append("\n<i>Use /unignore &lt;id&gt; to remove an entry.</i>")
+    await update.effective_chat.send_message("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_unignore(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    args = ctx.args or []
+    if not args:
+        await update.effective_chat.send_message(
+            "Usage: <code>/unignore &lt;fingerprint&gt;</code>\n"
+            "(get fingerprints from /ignored)",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    fp = args[0].strip()
+    if remove_ignored(fp):
+        await update.effective_chat.send_message(
+            f"Stopped ignoring <code>{fp}</code>. It will reappear on the "
+            f"next cycle if still active.",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.effective_chat.send_message(
+            f"No ignore entry for <code>{fp}</code>.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def cmd_trend(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1121,6 +1178,18 @@ async def on_callback(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
             )
         except Exception as e:
             log.warning("edit_message_text failed: %s", e)
+    elif action == "ign":
+        add_ignored(fp, label)
+        await query.answer("Permanently ignored.")
+        try:
+            await query.edit_message_text(
+                text=f"{label}\n\n<i>🚫 ignored permanently — /unignore "
+                     f"<code>{fp}</code> to undo</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception as e:
+            log.warning("edit_message_text failed: %s", e)
     else:
         await query.answer("Unknown action.", show_alert=True)
 
@@ -1199,6 +1268,8 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("runnow", cmd_runnow))
     app.add_handler(CommandHandler("acks", cmd_acks))
     app.add_handler(CommandHandler("unsnooze", cmd_unsnooze))
+    app.add_handler(CommandHandler("ignored", cmd_ignored))
+    app.add_handler(CommandHandler("unignore", cmd_unignore))
     app.add_handler(CommandHandler("trend", cmd_trend))
     app.add_handler(CommandHandler("chart", cmd_chart))
     app.add_handler(CommandHandler("logs", cmd_logs))

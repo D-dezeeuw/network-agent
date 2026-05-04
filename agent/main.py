@@ -4,7 +4,10 @@ import os
 import time
 from datetime import datetime, timezone
 
+import copy
+
 from acks import active_acks, snoozed_fingerprints
+from ignored import ignored_fingerprints
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -130,9 +133,12 @@ def run_agent(target_chat_id: int | str | None = None,
     ip_reputations = inputs["ip_reputations"]
 
     snoozed = snoozed_fingerprints()
-    sec_filtered, health_filtered = strip_snoozed_from_data(security, health, snoozed)
-    active_findings = filter_unsnoozed(enumerate_findings(security, health), snoozed)
-    log.info("findings: %d active, %d snoozed", len(active_findings), len(snoozed))
+    ignored = ignored_fingerprints()
+    suppressed = snoozed | ignored
+    sec_filtered, health_filtered = strip_snoozed_from_data(security, health, suppressed)
+    active_findings = filter_unsnoozed(enumerate_findings(security, health), suppressed)
+    log.info("findings: %d active, %d snoozed, %d ignored",
+             len(active_findings), len(snoozed), len(ignored))
 
     # Trends: compute deltas vs an earlier snapshot, then save current + prune.
     current_snap = extract_snapshot(metrics_summary, health)
@@ -145,7 +151,8 @@ def run_agent(target_chat_id: int | str | None = None,
         save_snapshot(current_snap)
         prune_snapshots()
 
-    parts = generate_report(metrics_summary, logs, news, sec_filtered, health_filtered,
+    parts = generate_report(metrics_summary, logs, news, sec_filtered,
+                            _trim_health_for_ai(health_filtered),
                             trends, fail2ban_status, rkhunter_status, ip_reputations,
                             raid_status)
 
@@ -193,6 +200,23 @@ def run_agent(target_chat_id: int | str | None = None,
             active_acks=active_acks(),
         )
         decrement_tool_mutes()
+
+
+def _trim_health_for_ai(health: dict) -> dict:
+    """Drop healthy-container inventory before passing to the LLM prompt.
+
+    The full `all_containers` list bloats the prompt and tempts the model
+    to enumerate clean-exited / running containers — but the digest
+    should only narrate the unhealthy ones. Charts and the per-cycle
+    archive keep the full data; only the AI's view is trimmed.
+    """
+    if not isinstance(health, dict):
+        return health
+    out = copy.deepcopy(health)
+    docker = out.get("docker_containers")
+    if isinstance(docker, dict):
+        docker.pop("all_containers", None)
+    return out
 
 
 def _archive_report(**kwargs) -> None:
@@ -272,13 +296,15 @@ def _send_digest_charts(snapshots: list[dict], health: dict,
 
 
 def _send_finding_buttons(findings) -> None:
-    """For each unsnoozed finding, send a follow-up message with snooze buttons."""
+    """For each unsnoozed finding, send a follow-up message with action
+    buttons. Two rows: snoozes on top, persistent actions below."""
     for f in findings:
-        buttons = [[
-            ("Snooze 24h", f"ack:s24:{f.fingerprint}"),
-            ("Snooze 7d", f"ack:s7d:{f.fingerprint}"),
-            ("Investigate", f"ack:inv:{f.fingerprint}"),
-        ]]
+        buttons = [
+            [("Snooze 24h", f"ack:s24:{f.fingerprint}"),
+             ("Snooze 7d", f"ack:s7d:{f.fingerprint}")],
+            [("Investigate", f"ack:inv:{f.fingerprint}"),
+             ("Ignore", f"ack:ign:{f.fingerprint}")],
+        ]
         text = f"{f.label}\n<i>id: <code>{f.fingerprint}</code></i>"
         send_message_with_buttons(text, buttons)
 
