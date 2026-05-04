@@ -35,7 +35,7 @@ from docker_logs import get_container_logs, list_container_names
 from history_metrics import known_metrics, metric_info, series_for_metric
 import memory
 from notifications import clear_mute, mute_for, mute_status
-from overrides import effective, is_settable, report_config, set_override, unset_override
+from overrides import is_settable, report_config, set_override, unset_override
 import reports
 from tg_publish import html_escape, send_audio, send_voice
 import tool_mute
@@ -87,6 +87,7 @@ HELP_TEXT = (
     "<b>/unset &lt;KEY&gt;</b> — revert an override\n"
     "<b>/config</b> — show effective settings + sources\n"
     "<b>/preview</b> — dry-run digest sent only to you\n"
+    "<b>/findings</b> — pull active findings as interactive cards\n"
     "<b>/speak</b> — voice summary of current state\n"
     "<b>/update</b> — pull and apply container updates via watchtower\n"
     "<b>/clearmemory</b> — forget recent Q&amp;A context\n"
@@ -120,6 +121,7 @@ BOT_COMMAND_MENU = [
     BotCommand("unset", "Revert an override"),
     BotCommand("config", "Show effective settings"),
     BotCommand("preview", "Dry-run digest to caller only"),
+    BotCommand("findings", "Pull active findings as cards"),
     BotCommand("speak", "Voice summary of current state"),
     BotCommand("update", "Run watchtower to update containers"),
     BotCommand("clearmemory", "Forget Q&A context"),
@@ -801,7 +803,7 @@ async def cmd_set(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "<code>TTS_MODEL</code>, <code>TTS_VOICE</code>, "
             "<code>TTS_AS_VOICE_MESSAGE</code>, <code>TTS_MAX_CHARS</code>, "
             "<code>TTS_SPEED</code>, <code>TTS_RESPONSE_FORMAT</code>, "
-            "<code>TTS_PCM_SAMPLE_RATE</code>",
+            "<code>TTS_PCM_SAMPLE_RATE</code>, <code>DIGEST_MODE</code>",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -947,6 +949,50 @@ async def cmd_unmute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+async def cmd_findings(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Pull currently-active findings as interactive button cards.
+
+    The natural companion to DIGEST_MODE=voice, where the scheduled cycle
+    no longer pushes finding cards. Cards go to the caller's chat, not
+    the digest channel — this is a query, not a broadcast.
+    """
+    if not _is_authorized_update(update):
+        await _refuse(update)
+        return
+    chat = update.effective_chat
+    if chat is None:
+        return
+
+    await chat.send_message("Loading active findings…")
+    from main import collect_findings_for_buttons  # avoid circular import
+    try:
+        findings = await asyncio.to_thread(collect_findings_for_buttons)
+    except Exception as e:
+        log.exception("findings command failed")
+        await chat.send_message(
+            f"🚨 Couldn't enumerate findings: {html_escape(str(e))}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if not findings:
+        await chat.send_message(
+            "✅ No active findings (snoozed + ignored excluded).",
+        )
+        return
+
+    from tg_publish import send_message_with_buttons
+    for f in findings:
+        buttons = [
+            [("Snooze 24h", f"ack:s24:{f.fingerprint}"),
+             ("Snooze 7d", f"ack:s7d:{f.fingerprint}")],
+            [("Investigate", f"ack:inv:{f.fingerprint}"),
+             ("Ignore", f"ack:ign:{f.fingerprint}")],
+        ]
+        text = f"{f.label}\n<i>id: <code>{f.fingerprint}</code></i>"
+        await asyncio.to_thread(send_message_with_buttons, text, buttons, chat.id)
+
+
 async def cmd_preview(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Dry-run a digest, sent only to the caller. Skips snapshot writes
     and tool-mute decrements so it doesn't perturb persistent state."""
@@ -1002,38 +1048,14 @@ async def cmd_speak(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode=ParseMode.HTML,
         )
 
-    try:
-        raw = await asyncio.to_thread(voice.synthesize_speech, summary)
-    except RuntimeError as e:
-        log.warning("speak: synthesis failed: %s", e)
-        await _fallback(f"🔇 TTS failed ({html_escape(str(e))}) — text only:")
+    audio, method, err = await asyncio.to_thread(voice.render_audio, summary)
+    if err:
+        log.warning("speak: %s", err)
+        await _fallback(f"🔇 {html_escape(err)} — text only:")
         return
 
-    as_voice = (effective("TTS_AS_VOICE_MESSAGE", "true") or "true").lower() == "true"
-    fmt = voice._resolve_response_format()  # "mp3" or "pcm"
-
-    if as_voice:
-        try:
-            ogg = await asyncio.to_thread(voice.to_ogg_opus, raw, fmt)
-        except RuntimeError as e:
-            log.warning("speak: transcode failed: %s", e)
-            await _fallback(f"🔇 Transcode failed ({html_escape(str(e))}) — text only:")
-            return
-        ok = await asyncio.to_thread(send_voice, ogg, "", chat.id)
-    else:
-        # sendAudio needs an MP3 (or other recognized container). Raw PCM
-        # has no headers, so wrap it before upload; MP3 passes through.
-        if fmt == "pcm":
-            try:
-                audio = await asyncio.to_thread(voice.pcm_to_mp3, raw)
-            except RuntimeError as e:
-                log.warning("speak: pcm→mp3 failed: %s", e)
-                await _fallback(f"🔇 Transcode failed ({html_escape(str(e))}) — text only:")
-                return
-        else:
-            audio = raw
-        ok = await asyncio.to_thread(send_audio, audio, "", chat.id)
-
+    sender = send_voice if method == "voice" else send_audio
+    ok = await asyncio.to_thread(sender, audio, "", chat.id)
     if not ok:
         await _fallback("🔇 Upload failed — text only:")
 
@@ -1285,6 +1307,7 @@ def build_application() -> Application | None:
     app.add_handler(CommandHandler("unset", cmd_unset))
     app.add_handler(CommandHandler("config", cmd_config))
     app.add_handler(CommandHandler("preview", cmd_preview))
+    app.add_handler(CommandHandler("findings", cmd_findings))
     app.add_handler(CommandHandler("speak", cmd_speak))
     app.add_handler(CommandHandler("update", cmd_update))
     app.add_handler(CommandHandler("clearmemory", cmd_clearmemory))

@@ -43,6 +43,13 @@ TTS_SPEED = float(os.getenv("TTS_SPEED", "1.0"))
 TTS_RESPONSE_FORMAT = os.getenv("TTS_RESPONSE_FORMAT", "mp3")
 TTS_PCM_SAMPLE_RATE = int(os.getenv("TTS_PCM_SAMPLE_RATE", "24000"))
 
+# `text` (default): scheduled digest sends 4 text sections + charts + per-finding
+#                   button cards (current behavior).
+# `voice`: scheduled digest sends ONLY a voice summary; finding cards are
+#          available on demand via /findings; charts via /chart. /preview
+#          ignores this and always shows the full text digest.
+DIGEST_MODE = os.getenv("DIGEST_MODE", "text")
+
 SECURITY_FEEDS = [
     "https://www.debian.org/security/dsa",
     "https://feeds.feedburner.com/TheHackersNews",

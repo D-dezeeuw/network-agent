@@ -1,7 +1,10 @@
+from unittest.mock import patch
+
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 import main
+import overrides
 
 
 def test_build_trigger_defaults_to_cron(monkeypatch):
@@ -58,3 +61,102 @@ def test_trim_health_for_ai_handles_non_dict_input():
     """Defensive — if upstream returns something weird, pass through."""
     assert main._trim_health_for_ai(None) is None
     assert main._trim_health_for_ai("muted") == "muted"
+
+
+# --- _digest_mode resolver ---------------------------------------------------
+
+def _set_overrides_path(monkeypatch, tmp_path):
+    p = tmp_path / "overrides.json"
+    monkeypatch.setattr(overrides, "OVERRIDES_PATH", str(p))
+    monkeypatch.setattr(overrides, "STATE_DIR", str(tmp_path))
+    return p
+
+
+def test_digest_mode_defaults_to_text(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "DIGEST_MODE", "text")
+    monkeypatch.delenv("DIGEST_MODE", raising=False)
+    assert main._digest_mode() == "text"
+
+
+def test_digest_mode_normalizes_case(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("DIGEST_MODE", "VOICE")
+    assert main._digest_mode() == "voice"
+
+
+def test_digest_mode_override_beats_env(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(main, "DIGEST_MODE", "text")
+    overrides.set_override("DIGEST_MODE", "voice")
+    assert main._digest_mode() == "voice"
+
+
+# --- _send_voice_digest ------------------------------------------------------
+
+def test_send_voice_digest_happy_path_calls_send_voice():
+    inputs = {"metrics": {}, "health": {}, "security": {}, "news": [], "fail2ban": {}}
+    with (
+        patch("main.voice.generate_voice_summary", return_value="hello"),
+        patch("main.voice.render_audio",
+              return_value=(b"OggS-data", "voice", "")),
+        patch("main.send_voice", return_value=True) as v,
+        patch("main.send_audio") as a,
+        patch("main.send_message") as m,
+    ):
+        main._send_voice_digest(inputs, target_chat_id=42)
+    v.assert_called_once_with(b"OggS-data", "", 42)
+    a.assert_not_called()
+    m.assert_not_called()
+
+
+def test_send_voice_digest_uses_send_audio_when_method_is_audio():
+    inputs = {"metrics": {}, "health": {}, "security": {}, "news": [], "fail2ban": {}}
+    with (
+        patch("main.voice.generate_voice_summary", return_value="hi"),
+        patch("main.voice.render_audio",
+              return_value=(b"\xff\xfbmp3-data", "audio", "")),
+        patch("main.send_voice") as v,
+        patch("main.send_audio", return_value=True) as a,
+        patch("main.send_message") as m,
+    ):
+        main._send_voice_digest(inputs, target_chat_id=42)
+    v.assert_not_called()
+    a.assert_called_once_with(b"\xff\xfbmp3-data", "", 42)
+    m.assert_not_called()
+
+
+def test_send_voice_digest_falls_back_to_text_on_synth_failure():
+    inputs = {"metrics": {}, "health": {}, "security": {}, "news": [], "fail2ban": {}}
+    with (
+        patch("main.voice.generate_voice_summary", return_value="prose summary"),
+        patch("main.voice.render_audio",
+              return_value=(None, "", "TTS failed: rate limit")),
+        patch("main.send_voice") as v,
+        patch("main.send_audio") as a,
+        patch("main.send_message", return_value=True) as m,
+    ):
+        main._send_voice_digest(inputs, target_chat_id=42)
+    v.assert_not_called()
+    a.assert_not_called()
+    # text fallback contains the failure reason AND the prose
+    args = m.call_args
+    body = args.args[0] if args.args else args.kwargs.get("text", "")
+    assert "TTS failed: rate limit" in body
+    assert "prose summary" in body
+    assert "🔇" in body
+
+
+def test_send_voice_digest_falls_back_to_text_on_upload_failure():
+    inputs = {"metrics": {}, "health": {}, "security": {}, "news": [], "fail2ban": {}}
+    with (
+        patch("main.voice.generate_voice_summary", return_value="prose"),
+        patch("main.voice.render_audio",
+              return_value=(b"OggS", "voice", "")),
+        patch("main.send_voice", return_value=False),
+        patch("main.send_message", return_value=True) as m,
+    ):
+        main._send_voice_digest(inputs, target_chat_id=42)
+    body = m.call_args.args[0]
+    assert "upload failed" in body.lower()
+    assert "prose" in body
