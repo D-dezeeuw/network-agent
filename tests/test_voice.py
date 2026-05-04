@@ -261,3 +261,80 @@ def test_pcm_to_mp3_raises_when_ffmpeg_missing():
         pytest.raises(RuntimeError, match="ffmpeg not installed"),
     ):
         voice.pcm_to_mp3(b"x")
+
+
+# --- render_audio (the unified synth + transcode dispatcher) ----------------
+
+def test_render_audio_voice_method_when_as_voice_true(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("TTS_AS_VOICE_MESSAGE", "true")
+    fake_resp = MagicMock()
+    fake_resp.read.return_value = b"\xff\xfbmp3"
+    fake_proc = MagicMock(stdout=b"OggS-bytes")
+    with (
+        patch.object(voice.client.audio.speech, "create", return_value=fake_resp),
+        patch("voice.subprocess.run", return_value=fake_proc),
+    ):
+        audio, method, err = voice.render_audio("hi")
+    assert err == ""
+    assert method == "voice"
+    assert audio == b"OggS-bytes"
+
+
+def test_render_audio_audio_method_when_as_voice_false(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("TTS_AS_VOICE_MESSAGE", "false")
+    fake_resp = MagicMock()
+    fake_resp.read.return_value = b"\xff\xfbmp3"
+    with patch.object(voice.client.audio.speech, "create", return_value=fake_resp):
+        audio, method, err = voice.render_audio("hi")
+    assert err == ""
+    assert method == "audio"
+    # mp3 input + audio mode = passthrough, no ffmpeg call
+    assert audio == b"\xff\xfbmp3"
+
+
+def test_render_audio_pcm_then_audio_wraps_via_ffmpeg(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("TTS_AS_VOICE_MESSAGE", "false")
+    overrides.set_override("TTS_RESPONSE_FORMAT", "pcm")
+    fake_resp = MagicMock()
+    fake_resp.read.return_value = b"raw-pcm"
+    fake_proc = MagicMock(stdout=b"\xff\xfbwrapped-mp3")
+    with (
+        patch.object(voice.client.audio.speech, "create", return_value=fake_resp),
+        patch("voice.subprocess.run", return_value=fake_proc) as run,
+    ):
+        audio, method, err = voice.render_audio("hi")
+    assert err == ""
+    assert method == "audio"
+    assert audio.startswith(b"\xff\xfb")
+    # ffmpeg invoked with libmp3lame, NOT libopus
+    cmd = run.call_args.args[0]
+    assert "libmp3lame" in cmd
+    assert "libopus" not in cmd
+
+
+def test_render_audio_returns_error_on_synth_failure():
+    with patch.object(voice.client.audio.speech, "create",
+                      side_effect=Exception("rate limit")):
+        audio, method, err = voice.render_audio("hi")
+    assert audio is None
+    assert method == ""
+    assert "TTS failed" in err
+    assert "rate limit" in err
+
+
+def test_render_audio_returns_error_on_transcode_failure(monkeypatch, tmp_path):
+    _set_overrides_path(monkeypatch, tmp_path)
+    overrides.set_override("TTS_AS_VOICE_MESSAGE", "true")
+    fake_resp = MagicMock()
+    fake_resp.read.return_value = b"\xff\xfbmp3"
+    with (
+        patch.object(voice.client.audio.speech, "create", return_value=fake_resp),
+        patch("voice.subprocess.run", side_effect=FileNotFoundError),
+    ):
+        audio, method, err = voice.render_audio("hi")
+    assert audio is None
+    assert "Transcode failed" in err
+    assert "ffmpeg not installed" in err

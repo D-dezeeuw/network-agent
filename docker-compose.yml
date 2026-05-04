@@ -30,6 +30,7 @@ services:
       TTS_SPEED: ${TTS_SPEED:-1.0}
       TTS_RESPONSE_FORMAT: ${TTS_RESPONSE_FORMAT:-mp3}
       TTS_PCM_SAMPLE_RATE: ${TTS_PCM_SAMPLE_RATE:-24000}
+      DIGEST_MODE: ${DIGEST_MODE:-text}
     volumes:
       - /var/log:/host/logs:ro
       - /run/log/journal:/run/log/journal:ro

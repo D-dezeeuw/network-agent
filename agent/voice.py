@@ -212,3 +212,38 @@ def pcm_to_mp3(pcm_bytes: bytes, sample_rate: int | None = None) -> bytes:
         "-f", "mp3", "pipe:1",
     ]
     return _run_ffmpeg(args, pcm_bytes)
+
+
+def render_audio(text: str) -> tuple[bytes | None, str, str]:
+    """Run text → ready-to-upload audio bytes, picking the right method.
+
+    Returns (audio_bytes, method, error). On any failure returns
+    (None, "", error_string) — caller is responsible for posting a
+    text fallback. method is either "voice" (sendVoice with audio/ogg)
+    or "audio" (sendAudio with audio/mpeg) depending on
+    TTS_AS_VOICE_MESSAGE plus the upstream response_format.
+    """
+    try:
+        raw = synthesize_speech(text)
+    except RuntimeError as e:
+        return None, "", f"TTS failed: {e}"
+
+    as_voice = (effective("TTS_AS_VOICE_MESSAGE", "true") or "true").lower() == "true"
+    fmt = _resolve_response_format()
+
+    if as_voice:
+        try:
+            ogg = to_ogg_opus(raw, fmt)
+        except RuntimeError as e:
+            return None, "", f"Transcode failed: {e}"
+        return ogg, "voice", ""
+
+    # audio-attachment mode: PCM upstream still needs MP3 wrapping; MP3
+    # upstream passes through as-is.
+    if fmt == "pcm":
+        try:
+            audio = pcm_to_mp3(raw)
+        except RuntimeError as e:
+            return None, "", f"Transcode failed: {e}"
+        return audio, "audio", ""
+    return raw, "audio", ""

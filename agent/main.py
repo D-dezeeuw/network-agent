@@ -12,7 +12,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from config import OPENROUTER_MODEL, REPORT_HOUR, REPORT_INTERVAL_HOURS, RESET_BASELINE
+from config import (
+    DIGEST_MODE,
+    OPENROUTER_MODEL,
+    REPORT_HOUR,
+    REPORT_INTERVAL_HOURS,
+    RESET_BASELINE,
+)
 import abuseipdb
 from fail2ban import get_status as get_fail2ban_status
 from raid import get_status as get_raid_status
@@ -47,7 +53,15 @@ from trends import (
 )
 from ai import generate_report
 from charts import render_sparkline, render_status_grid
-from tg_publish import send_message_with_buttons, send_messages, send_photo
+from tg_publish import (
+    send_audio,
+    send_message,
+    send_message_with_buttons,
+    send_messages,
+    send_photo,
+    send_voice,
+)
+import voice
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,6 +123,20 @@ def collect_inputs() -> dict:
     }
 
 
+def collect_findings_for_buttons() -> list:
+    """Return the list of currently-active findings (snoozed + ignored
+    fingerprints filtered out), suitable for posting interactive cards.
+
+    Bypasses per-source mutes deliberately — /findings is explicit user
+    intent and shouldn't silently return nothing because someone muted
+    the security_scan or system_health source.
+    """
+    security = run_scan(reset=False)
+    health = run_health_check()
+    suppressed = snoozed_fingerprints() | ignored_fingerprints()
+    return filter_unsnoozed(enumerate_findings(security, health), suppressed)
+
+
 def run_agent(target_chat_id: int | str | None = None,
               force: bool = False, preview: bool = False) -> None:
     """Collect data, build the digest, send to the configured channel.
@@ -161,7 +189,15 @@ def run_agent(target_chat_id: int | str | None = None,
     else:
         allow_digest, reason = should_send_digest()
 
-    if allow_digest:
+    # Voice mode short-circuits the text+charts+buttons pipeline. /preview
+    # always shows the full text digest regardless — it's the "let me see
+    # everything" command.
+    voice_mode = (not preview) and _digest_mode() == "voice"
+
+    if allow_digest and voice_mode:
+        log.info("Voice digest cycle (target=%s)", target_chat_id or "default")
+        _send_voice_digest(inputs, target_chat_id)
+    elif allow_digest:
         success = send_messages(parts, chat_id=target_chat_id)
         log.info("Report sent: %d parts, ok=%s (target=%s)",
                  len(parts), success, target_chat_id or "default")
@@ -200,6 +236,45 @@ def run_agent(target_chat_id: int | str | None = None,
             active_acks=active_acks(),
         )
         decrement_tool_mutes()
+
+
+def _digest_mode() -> str:
+    """Effective DIGEST_MODE: override → env → default. Always lower-case."""
+    raw = effective("DIGEST_MODE", DIGEST_MODE) or "text"
+    return raw.lower()
+
+
+def _send_voice_digest(inputs: dict, target_chat_id: int | str | None) -> None:
+    """Generate + post a voice summary as the entire scheduled output.
+
+    Posts a text fallback (the same summary prose, prefixed with 🔇 and
+    the failure reason) on synth/transcode/upload failure so the user
+    never gets a silent cycle.
+    """
+    summary = voice.generate_voice_summary(
+        inputs.get("metrics") or {},
+        inputs.get("health") or {},
+        inputs.get("security") or {},
+        inputs.get("news") or [],
+        None,
+        inputs.get("fail2ban") or {},
+    )
+    audio, method, err = voice.render_audio(summary)
+    if err or audio is None:
+        log.warning("voice digest failed (%s); falling back to text", err)
+        send_message(
+            f"🔇 Voice digest unavailable ({err}). Summary:\n\n{summary}",
+            chat_id=target_chat_id,
+        )
+        return
+
+    sender = send_voice if method == "voice" else send_audio
+    if not sender(audio, "", target_chat_id):
+        log.warning("voice upload failed; falling back to text")
+        send_message(
+            f"🔇 Voice upload failed. Summary:\n\n{summary}",
+            chat_id=target_chat_id,
+        )
 
 
 def _trim_health_for_ai(health: dict) -> dict:

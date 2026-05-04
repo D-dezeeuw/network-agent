@@ -42,6 +42,7 @@ SETTABLE_KEYS = {
     "TTS_PCM_SAMPLE_RATE": _coerce_int,
     "ABUSEIPDB_CACHE_TTL_HOURS": _coerce_int,
     "ABUSEIPDB_LOOKUP_LIMIT": _coerce_int,
+    "DIGEST_MODE": _coerce_str,
 }
 
 
