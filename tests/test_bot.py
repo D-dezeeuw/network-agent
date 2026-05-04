@@ -29,7 +29,9 @@ def test_command_queries_match_bot_command_menu():
     menu_names = {c.command for c in bot.BOT_COMMAND_MENU}
     query_names = set(bot.COMMAND_QUERIES.keys())
     direct_handlers = {
-        "help", "runnow", "acks", "unsnooze", "trend", "chart", "logs",
+        "help", "runnow", "acks", "unsnooze",
+        "ignored", "unignore",
+        "trend", "chart", "logs",
         "history", "stats", "report", "export",
         "mute_all", "unmute_all", "mute", "unmute",
         "set", "unset", "config", "preview", "speak", "update", "clearmemory",

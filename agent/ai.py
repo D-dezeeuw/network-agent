@@ -150,8 +150,14 @@ Escalation rules:
   RAID rebuild in progress (`raid.severity=recovering`).
 - ALSO HIGHEST PRIORITY (Critical): RAID array degraded with no rebuild
   in progress (`raid.severity=degraded`) — this means a disk is gone.
-- DO NOT flag: clean-exited containers (in `all_containers` only),
-  warning-level disk states, port probes alone, fail2ban bans alone
+- DO NOT enumerate Docker containers. The data only includes the
+  `concerning`, `high_restart`, and `stale_images_90d` lists by design
+  — never list healthy / running / clean-exited containers, and never
+  describe the full container inventory. If all three lists are empty,
+  either say "all containers healthy" in one short clause or omit
+  Docker from the section entirely.
+- DO NOT flag: clean-exited containers, warning-level disk states,
+  port probes alone, fail2ban bans alone
   (the system is doing its job). Disk capacity goes in METRICS as info
   only — escalate disks only on actual failure (drive offline, FS error
   in kmsg, read-only remount).
