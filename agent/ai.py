@@ -52,12 +52,14 @@ def generate_report(metrics: dict, logs: dict, news: list, security: dict,
                     health: dict, trends: dict | None = None,
                     fail2ban: dict | None = None,
                     rkhunter: dict | None = None,
-                    ip_reputations: dict | None = None) -> list[str]:
+                    ip_reputations: dict | None = None,
+                    raid: dict | None = None) -> list[str]:
     """Generate the daily digest as an ordered list of section messages."""
     trends_block = trends or {"deltas": {}, "disk_forecasts": {}}
     fail2ban_block = fail2ban or {"enabled": False}
     rkhunter_block = rkhunter or {"enabled": False}
     ip_reputations_block = ip_reputations or {}
+    raid_block = raid or {"enabled": False}
     prompt = f"""\
 You are an ops monitoring agent for a Linux server (Debian Bookworm).
 Analyze the data below and produce a digest in EXACTLY four sections,
@@ -79,7 +81,20 @@ counts are quiet, give a single short reassurance line.
 
 ##HEALTH##
 System health: reboot_required, pending updates (highlight security
-count), Docker concerning containers, notable kernel messages.
+count), Docker concerning containers, notable kernel messages, RAID
+state (see rules below).
+
+RAID annotations (under HEALTH):
+- If `raid.enabled=false`, skip silently — kernel md not present.
+- If `raid.severity=healthy`, mention briefly only when there's space
+  (e.g. "RAID: all 4 arrays clean") — don't expand.
+- If `raid.severity=recovering`, surface the rebuild progress as a
+  Warning-level line: "RAID rebuild in progress: mdN at X% (~M min)".
+  Do NOT escalate to Critical — recovery is a self-resolving state.
+- If `raid.severity=degraded` (degraded WITHOUT a rebuild in progress),
+  this is a CRITICAL signal: a disk is gone and nothing is replacing
+  it. Surface prominently with the array names from `raid.arrays` that
+  are degraded, including their `state_pattern`.
 
 ##METRICS##
 CPU/RAM/disk usage in plain language, then any relevant CVE news entries.
@@ -131,7 +146,10 @@ Escalation rules:
 - HIGH PRIORITY (Warning): reboot_required true, security updates &gt; 0,
   Docker `concerning` (unhealthy/dead/restarting/exit&gt;0), `high_restart`,
   `stale_images_90d`, kernel messages with hard-failure signals,
-  brute-force bursts where a single IP has &gt;20 failed attempts.
+  brute-force bursts where a single IP has &gt;20 failed attempts,
+  RAID rebuild in progress (`raid.severity=recovering`).
+- ALSO HIGHEST PRIORITY (Critical): RAID array degraded with no rebuild
+  in progress (`raid.severity=degraded`) — this means a disk is gone.
 - DO NOT flag: clean-exited containers (in `all_containers` only),
   warning-level disk states, port probes alone, fail2ban bans alone
   (the system is doing its job). Disk capacity goes in METRICS as info
@@ -162,6 +180,9 @@ Escalation rules:
 
 ## IP Reputations (AbuseIPDB)
 {ip_reputations_block}
+
+## RAID Status (mdadm)
+{raid_block}
 
 ## Relevant Security News
 {news}

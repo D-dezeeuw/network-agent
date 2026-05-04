@@ -11,6 +11,7 @@ from netdata import collect_all_metrics, fetch_active_alarms, summarize_chart
 from docker_logs import get_container_logs
 import abuseipdb
 from fail2ban import get_status as get_fail2ban_status
+from raid import get_status as get_raid_status
 from rkhunter import get_status as get_rkhunter_status
 from logs import get_auth_log_summary
 import reports
@@ -96,6 +97,10 @@ def _get_abuseipdb_report(ip: str) -> dict:
         return {"ip": ip, "available": False,
                 "reason": "no API key set, invalid IP, or lookup failed"}
     return {"ip": ip, "available": True, **record}
+
+
+def _get_raid_status_tool() -> dict:
+    return get_raid_status()
 
 
 def _get_report_history(days: int = 7, limit: int | None = None) -> list[dict]:
@@ -272,6 +277,14 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "get_raid_status",
+            "description": "Return software-RAID (mdadm) status parsed from /proc/mdstat: per-array state pattern ([UU]/[U_]/[__]), member devices, and any in-progress rebuild/resync with percent + ETA. Severity is one of healthy / recovering / degraded. Use for 'is the raid healthy', 'how is the rebuild going', or 'which disk failed' questions. Returns `enabled: false` if /proc/mdstat isn't present.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_report_history",
             "description": "Return COMPACT summaries (timestamp, verdict, finding/critical counts, ban count, sent y/n) of past digest cycles in the last N days. NOT the full digests — context-cheap. Use for 'what's been happening lately', 'how many criticals last week', 'when did we last have a quiet day' questions.",
             "parameters": {
@@ -329,6 +342,7 @@ TOOL_IMPLS = {
     "get_fail2ban_status": _get_fail2ban_status,
     "get_rkhunter_status": _get_rkhunter_status,
     "get_abuseipdb_report": _get_abuseipdb_report,
+    "get_raid_status": _get_raid_status_tool,
     "get_report_history": _get_report_history,
     "get_report_detail": _get_report_detail,
     "get_history_stats": _get_history_stats,

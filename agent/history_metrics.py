@@ -80,6 +80,12 @@ METRICS: dict[str, dict] = {
         "title": "rkhunter cumulative warning count per cycle",
         "ylabel": "warnings",
     },
+    "raid": {
+        "path": "raid.degraded_count",
+        "label": "degraded RAID arrays",
+        "title": "Degraded RAID array count per cycle",
+        "ylabel": "arrays",
+    },
 }
 
 
