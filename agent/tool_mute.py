@@ -29,6 +29,7 @@ ALIASES = {
     "health": "system_health",
     "rkhunter": "rkhunter",
     "abuseipdb": "abuseipdb",
+    "raid": "raid",
 }
 
 
